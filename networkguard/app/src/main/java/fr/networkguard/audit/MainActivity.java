@@ -80,6 +80,7 @@ public class MainActivity extends Activity {
         note("Aucune IP à saisir. Choisis une fiche /host/IP et confirme qu'elle t'appartient.", MUTED);
         button("Scanner les ports exposés", () -> scanPorts());
         scanResult = note("Aucun scan réalisé.", MUTED);
+        button("Chercher un flux vidéo standard sur MON équipement", this::probeOwnedStandardVideo);
         section("02  CAMÉRA EN DIRECT");
         note("Saisis une URL de flux HTTP(S) sur un équipement qui t'appartient. La vidéo n'est pas enregistrée.", MUTED);
         directUrl = input("https://mon-domaine:port/flux-camera", false);
@@ -223,6 +224,39 @@ public class MainActivity extends Activity {
                     setStatus("Scan TCP terminé : "+found+" port(s) répond(ent), aucun flux vidéo déduit.",BLUE);
                 });
             }catch(Exception ex){runOnUiThread(()->setStatus("Scan impossible : "+ex.getMessage(),RED));}
+        });
+    }
+
+    private void probeOwnedStandardVideo(){
+        if(!requireMobile())return;
+        if(!verifiedOwner){setStatus("Confirme d'abord une fiche correspondant à ton appareil.",RED);return;}
+        String ip=target.getText().toString().trim();
+        setStatus("Recherche limitée de flux HTTP sur l'appareil confirmé...",BLUE);
+        pool.execute(()->{
+            int[] ports={80,8080,8000,443,8443};
+            String[] paths={"/video","/mjpeg","/video.mjpg","/stream"};
+            try{
+                SecurityRules.requirePublicHost(ip);
+                for(int port:ports){
+                    String protocol=(port==443||port==8443)?"https":"http";
+                    for(String path:paths){
+                        URL u=new URL(protocol+"://"+ip+":"+port+path);
+                        try{
+                            HttpProbe.Result res=HttpProbe.inspect(u);
+                            if(res.playable){
+                                runOnUiThread(()->{
+                                    if(!ip.equals(target.getText().toString()))return;
+                                    directUrl.setText(u.toString());
+                                    setStatus("Une piste de flux a été identifiée. Lecture directe en cours...",BLUE);
+                                    probe(u.toString(),false);
+                                });
+                                return;
+                            }
+                        }catch(Exception ignored){}
+                    }
+                }
+                runOnUiThread(()->setStatus("Aucun flux vidéo HTTP standard détecté. Cela ne prouve PAS que la caméra est protégée.",BLUE));
+            }catch(Exception e){runOnUiThread(()->setStatus("Vérification non concluante : "+e.getMessage(),RED));}
         });
     }
     private void probe(String raw,boolean cloud){

@@ -2,6 +2,7 @@ package fr.networkguard.audit;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import android.net.Network;
 
 public final class HttpProbe {
     public static final class Result {
@@ -17,7 +18,11 @@ public final class HttpProbe {
     }
 
     public static Result inspect(URL url) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        return inspect(url,null);
+    }
+
+    public static Result inspect(URL url, Network network) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) (network == null ? url.openConnection() : network.openConnection(url));
         c.setConnectTimeout(5000);
         c.setReadTimeout(5000);
         c.setInstanceFollowRedirects(false);

@@ -48,6 +48,8 @@ public class MainActivity extends Activity {
         TEXT=Color.WHITE, MUTED=0xffbecfe0, GREEN=0xff68e1b2,
         BLUE=0xff91c5ff, RED=0xffffa2a2;
     private LinearLayout root,wifiPanel,mobilePanel,wifiResults,publicResults,videoPanel;
+    private TextView listSummary;
+    private CheckBox showAllServices;
     private TextView wifiStatus,mobileStatus,videoStatus;
     private Spinner samplePicker;
     private CheckBox sampleNotice;
@@ -60,6 +62,8 @@ public class MainActivity extends Activity {
     private boolean wifiReceiverRegistered=false,videoPlaying=false,gotFrame=false;
     private int detected=0;
     private final java.util.Map<String,Integer> portProfiles=new java.util.HashMap<>();
+    private final List<PublicSampleScanner.Host> publicHosts=new ArrayList<>();
+    private final java.util.Set<String> decodedVideoHosts=new java.util.HashSet<>();
 
     private final BroadcastReceiver wifiReceiver=new BroadcastReceiver() {
         @Override public void onReceive(Context c,Intent intent){
@@ -81,7 +85,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.5.1 • Wi-Fi sans connexion + échantillons Internet en 4G/5G",MUTED);
+        label(root,"0.6.0 • Radars Wi-Fi et 4G/5G • filtre vidéo",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -117,6 +121,15 @@ public class MainActivity extends Activity {
             mobileStatus.setText("Arrêt demandé. Les résultats déjà trouvés restent affichés.");
         });
         mobileStatus=label(mobilePanel,"Aucune recherche effectuée.",BLUE);
+        label(mobilePanel,"● Vert : vraies images décodées sur TON appareil.\n● Orange : port RTSP possible, vidéo NON vérifiée.\n● Bleu : web accessible, vidéo inconnue.\n● Gris : nature inconnue.",MUTED);
+        showAllServices=new CheckBox(this);
+        showAllServices.setText("Afficher aussi les services web et autres (aucune preuve de vidéo)");
+        showAllServices.setTextSize(13);
+        showAllServices.setTextColor(TEXT);
+        showAllServices.setChecked(false);
+        showAllServices.setOnCheckedChangeListener((button,checked)->renderPublicResults());
+        mobilePanel.addView(showAllServices);
+        listSummary=label(mobilePanel,"Filtre activé : seuls les indices RTSP seront affichés.",BLUE);
         publicResults=new LinearLayout(this);publicResults.setOrientation(LinearLayout.VERTICAL);
         mobilePanel.addView(publicResults);
 
@@ -282,7 +295,8 @@ public class MainActivity extends Activity {
         try{net=cellularNetwork();}
         catch(Exception e){mobileStatus.setText(e.getMessage());return;}
         int sample=samplePicker.getSelectedItemPosition();
-        publicResults.removeAllViews();detected=0;portProfiles.clear();
+        publicResults.removeAllViews();detected=0;portProfiles.clear();publicHosts.clear();decodedVideoHosts.clear();
+        renderPublicResults();
         scanning.set(true);
         mobileStatus.setText("Analyse en 4G/5G de l'échantillon "+(sample+1)+" : 254 IP au maximum.\nServices réseau seulement ; aucune vidéo ouverte.");
         work.execute(()->{
@@ -292,10 +306,10 @@ public class MainActivity extends Activity {
                         runOnUiThread(()->{
                             if(!scanning.get())return;
                             detected++;
+                            publicHosts.add(h);
                             String profile=h.ports.toString();
                             portProfiles.put(profile,portProfiles.containsKey(profile)?portProfiles.get(profile)+1:1);
-                            button(publicResults,h.ip+" • ports TCP répondants (non identifiés) : "+h.ports,
-                                ()->chooseOwnedHost(h));
+                            renderPublicResults();
                         });
                     }
                     @Override public void progress(int count,int total){
@@ -314,6 +328,55 @@ public class MainActivity extends Activity {
             finally{scanning.set(false);}
         });
     }
+    private void renderPublicResults(){
+        if(publicResults==null||listSummary==null||showAllServices==null)return;
+        publicResults.removeAllViews();
+        boolean showAll=showAllServices.isChecked();
+        int likely=0,other=0,shown=0;
+        for(PublicSampleScanner.Host h:publicHosts){
+            int cat=VideoEvidence.category(h.ports,decodedVideoHosts.contains(h.ip));
+            if(cat>=2)likely++;
+            else other++;
+            if(!showAll && cat<2)continue;
+            shown++;
+            LinearLayout row=new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(11),dp(9),dp(11),dp(9));
+            row.setBackground(bg());
+            LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);
+            rp.setMargins(0,dp(4),0,dp(4));
+            publicResults.addView(row,rp);
+            TextView dot=new TextView(this);
+            dot.setText("●");
+            dot.setTextSize(26);
+            int dotColor=cat==3?GREEN:cat==2?0xffffbf69:cat==1?BLUE:MUTED;
+            dot.setTextColor(dotColor);
+            dot.setPadding(dp(2),0,dp(10),0);
+            row.addView(dot);
+            LinearLayout desc=new LinearLayout(this);
+            desc.setOrientation(LinearLayout.VERTICAL);
+            row.addView(desc,new LinearLayout.LayoutParams(0,-2,1f));
+            TextView ip=new TextView(this);
+            ip.setText(h.ip);ip.setTextColor(TEXT);ip.setTextSize(16);
+            desc.addView(ip);
+            TextView details=new TextView(this);
+            details.setTextSize(12);details.setTextColor(MUTED);
+            String type=cat==3?"Images vidéo décodées sur ton appareil (direct à confirmer)"
+                :cat==2?"Indice RTSP : aucune image vérifiée"
+                :cat==1?"Service web seulement : flux inconnu"
+                :"Service non identifié";
+            details.setText(type+" • TCP "+h.ports);
+            desc.addView(details);
+            row.setOnClickListener(v->chooseOwnedHost(h));
+        }
+        listSummary.setText("Affichés : "+shown+" / "+publicHosts.size()+
+            " • Indices vidéo : "+likely+" • Autres : "+other+
+            (showAll?"\nTous les services détectés sont visibles."
+                :"\nServices sans indice RTSP masqués (PAS déclarés sans vidéo)."+
+                "\nActive la case ci-dessus pour les retrouver."));
+    }
+
     private void chooseOwnedHost(PublicSampleScanner.Host h){
         // Android AlertDialog setMessage() and setMultiChoiceItems() share the
         // same content slot. A custom view keeps the ownership checkbox visible.
@@ -389,6 +452,7 @@ public class MainActivity extends Activity {
         try{cellularNetwork();}
         catch(Exception e){videoStatus.setText(e.getMessage());return;}
         stopVideo();videoPlaying=true;gotFrame=false;
+        currentVideoIp=url.getHost();
         videoStatus.setText("Tentative de décodage du média en direct…");
         work.execute(()->{
             try{
@@ -431,9 +495,14 @@ public class MainActivity extends Activity {
             }catch(Exception e){runOnUiThread(()->videoStatus.setText("Erreur vidéo : "+e.getMessage()));}
         });
     }
+    private String currentVideoIp="";
     private void showVideoProof(){
+        if(!currentVideoIp.isEmpty()){
+            decodedVideoHosts.add(currentVideoIp);
+            renderPublicResults();
+        }
         videoStatus.setTextColor(RED);
-        videoStatus.setText("Premières images décodées sans identifiants, depuis la 4G/5G. Bouge devant TA caméra pour vérifier le direct.");
+        videoStatus.setText("Images reçues sans identifiants depuis la 4G/5G. Vérifie qu'elles viennent bien de TA caméra et qu'elles sont en direct.");
     }
     private void stopVideo(){
         videoPlaying=false;gotFrame=false;

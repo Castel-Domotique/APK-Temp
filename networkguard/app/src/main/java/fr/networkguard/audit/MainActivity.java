@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
     private volatile boolean visuallyConfirmed = false;
     private boolean verifiedOwner = false;
     private TextView discoveryStatus;
+    private Spinner geography;
+    private EditText customCity;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -55,9 +57,28 @@ public class MainActivity extends Activity {
         note("MODE AVEUGLE • découverte publique sans IP à saisir", MUTED);
         section("00  RECHERCHE PUBLIQUE");
         note("Recherche dans Shodan, sans connexion à la Freebox. Les résultats peuvent appartenir à des inconnus : sélectionne seulement tes appareils.", MUTED);
+        geography = new Spinner(this);
+        String[] geographicScopes = {
+            "Pont-Sainte-Maxence",
+            "Oise (villes principales)",
+            "Hauts-de-France (filtre indicatif)",
+            "France entière",
+            "Autre ville française"
+        };
+        ArrayAdapter<String> scopeAdapter=new ArrayAdapter<String>(
+            this, android.R.layout.simple_spinner_item, geographicScopes);
+        scopeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        geography.setAdapter(scopeAdapter);
+        root.addView(geography, new LinearLayout.LayoutParams(-1,dp(48)));
+        customCity=input("Autre ville (si sélectionnée)",false);
+        customCity.setText("");
+        note("La géolocalisation IP est approximative. Élargis la recherche si rien n'apparaît.",MUTED);
         button("Rechercher les caméras indexées", () -> browse("webcam"));
         button("Rechercher les services RTSP indexés", () -> browse("port:554"));
         button("Rechercher les interfaces caméra", () -> browse("title:camera"));
+        button("Essayer Netlas (moteur alternatif)", () -> otherIndex("https://app.netlas.io/", "Netlas"));
+        button("Essayer ZoomEye (moteur alternatif)", () -> otherIndex("https://www.zoomeye.ai/", "ZoomEye"));
+        button("Essayer Censys (moteur alternatif)", () -> otherIndex("https://platform.censys.io/", "Censys"));
         discoveryStatus = note("Choisis une recherche. Le navigateur s'ouvrira : plus de page blanche dans l'application.",BLUE);
         button("Importer une fiche Shodan copiée",this::chooseClipboard);
         note("Après la recherche, ouvre uniquement une fiche correspondant à TON IP, copie son lien /host/IP, reviens ici et appuie sur Importer. Shodan peut exiger un compte Shodan ou restreindre les résultats. Aucun compte Freebox nécessaire.", MUTED);
@@ -145,13 +166,36 @@ public class MainActivity extends Activity {
         return false;
     }
     private void setStatus(String s,int color){if(status!=null) {status.setText(s);status.setTextColor(color);} }
+    private String geographicFilter(){
+        int position=geography.getSelectedItemPosition();
+        switch(position){
+            case 0: return "country:FR city:\"Pont-Sainte-Maxence\"";
+            case 1: return "country:FR city:Creil,Compiègne,Beauvais,Senlis,Pont-Sainte-Maxence";
+            case 2: return "country:FR region:\"Hauts-de-France\"";
+            case 3: return "country:FR";
+            default:
+                String city=customCity.getText().toString().trim().replaceAll("[\\r\\n\\\"]"," ");
+                if(city.length()>70)city=city.substring(0,70);
+                if(city.isEmpty())return null;
+                return "country:FR city:\""+city+"\"";
+        }
+    }
+    private void otherIndex(String url, String name){
+        if(!requireMobile())return;
+        discoveryStatus.setText("Ouverture de "+name+". Applique le filtre géographique dans le site ; les filtres diffèrent selon les moteurs.");
+        try { startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url))); }
+        catch(Exception e){ discoveryStatus.setText(name+" ne s'ouvre pas : "+e.getClass().getSimpleName()); }
+    }
     private void browse(String query){
         if(!requireMobile()){
             if(discoveryStatus!=null)discoveryStatus.setText("Wi-Fi ou VPN détecté : désactive-les puis réessaie sur la 4G/5G.");
             return;
         }
-        String url="https://www.shodan.io/search?query="+Uri.encode(query);
-        discoveryStatus.setText("Ouverture de Shodan dans ton navigateur. Sélectionne uniquement TES équipements, copie leur lien puis reviens sur Importer.");
+        String geo=geographicFilter();
+        if(geo==null){discoveryStatus.setText("Indique une ville pour la recherche personnalisée.");return;}
+        String completeQuery=query+" "+geo;
+        String url="https://www.shodan.io/search?query="+Uri.encode(completeQuery);
+        discoveryStatus.setText("Recherche géographique : "+geo+". Ouverture du navigateur. Les résultats peuvent être inexacts ou incomplets.");
         try {
             Intent intent=new Intent(Intent.ACTION_VIEW,Uri.parse(url));
             startActivity(intent);

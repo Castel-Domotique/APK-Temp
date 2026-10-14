@@ -58,12 +58,11 @@ public class MainActivity extends Activity {
     private static final int BACK=0xff0b1728, PANEL=0xff1a2d43,
         TEXT=Color.WHITE, MUTED=0xffbecfe0, GREEN=0xff68e1b2,
         BLUE=0xff91c5ff, RED=0xffffa2a2;
-    private LinearLayout root,wifiPanel,mobilePanel,wifiResults,publicResults,videoPanel;
-    private TextView listSummary;
-    private CheckBox showAllServices;
-    private TextView wifiStatus,mobileStatus,videoStatus;
-    private Spinner samplePicker;
-    private CheckBox sampleNotice;
+    private LinearLayout root,wifiPanel,mobilePanel,wifiResults,indexResults,videoPanel;
+    private TextView wifiStatus,indexStatus,videoStatus;
+    private Spinner typeChooser,brandChooser;
+    private EditText netlasKey;
+    private final List<NetlasIndex.Item> indexed=new ArrayList<>();
     private VideoView player;
     private PlayerView rtspView;
     private ExoPlayer rtspPlayer;
@@ -76,10 +75,6 @@ public class MainActivity extends Activity {
     private final AtomicBoolean scanning=new AtomicBoolean(false);
     private WifiManager wifi;
     private boolean wifiReceiverRegistered=false,videoPlaying=false,gotFrame=false;
-    private int detected=0;
-    private int totalIpExamined=0;
-    private final java.util.Map<String,Integer> portProfiles=new java.util.HashMap<>();
-    private final List<PublicSampleScanner.Host> publicHosts=new ArrayList<>();
     private final java.util.Set<String> decodedVideoHosts=new java.util.HashSet<>();
 
     private final BroadcastReceiver wifiReceiver=new BroadcastReceiver() {
@@ -102,7 +97,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.7.2 • RTSP : diagnostic, arrêt automatique et filtre anti-faux positifs",MUTED);
+        label(root,"0.8.0 • Multi-marques : TV, webcams et caméras IP",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -119,37 +114,47 @@ public class MainActivity extends Activity {
         wifiPanel.addView(wifiResults);
 
         mobilePanel=panel(root);
-        title(mobilePanel,"02 • 4G/5G sans IP mémorisée",20,GREEN);
-        label(mobilePanel,"Prototype indépendant de Shodan : connexion TCP sur 254 adresses publiques d'un échantillon. Aucune IP de chez toi n'est demandée ni récupérée.",TEXT);
-        label(mobilePanel,"IMPORTANT : ces échantillons viennent du script reçu. Leur nom ne donne AUCUNE information fiable sur leur ville, et leur chance de contenir tes caméras est très faible.",RED);
-        samplePicker=new Spinner(this);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,
-            android.R.layout.simple_spinner_item,PublicSampleScanner.SAMPLE_NAMES);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        samplePicker.setAdapter(adapter);
-        mobilePanel.addView(samplePicker,new LinearLayout.LayoutParams(-1,dp(52)));
-        sampleNotice=new CheckBox(this);
-        sampleNotice.setText("J'ai compris : ce sont des réseaux publics tiers. Seule une connexion TCP est tentée. Je ne demanderai la vidéo que pour un équipement qui m'appartient.");
-        sampleNotice.setTextSize(13);sampleNotice.setTextColor(TEXT);
-        mobilePanel.addView(sampleNotice);
-        button(mobilePanel,"Rechercher les services TCP dans cet échantillon",this::startSampleScan);
-        button(mobilePanel,"Arrêter la recherche",()->{
-            scanning.set(false);
-            mobileStatus.setText("Arrêt demandé. Les résultats déjà trouvés restent affichés.");
-        });
-        mobileStatus=label(mobilePanel,"Aucune recherche effectuée.",BLUE);
-        label(mobilePanel,"● Vert : vraie image décodée sur un appareil confirmé.\n● Orange : seul indice RTSP, sans image vérifiée.\n● Bleu : service web non identifié.\n● Gris : profil de ports répété/suspect ou autre.",MUTED);
-        showAllServices=new CheckBox(this);
-        showAllServices.setText("Afficher aussi les services web et profils suspects (non prouvés)");
-        showAllServices.setTextSize(13);
-        showAllServices.setTextColor(TEXT);
-        showAllServices.setChecked(false);
-        showAllServices.setOnCheckedChangeListener((button,checked)->renderPublicResults());
-        mobilePanel.addView(showAllServices);
-        listSummary=label(mobilePanel,"Filtre activé : seuls les indices RTSP seront affichés.",BLUE);
-        publicResults=new LinearLayout(this);publicResults.setOrientation(LinearLayout.VERTICAL);
-        mobilePanel.addView(publicResults);
+        title(mobilePanel,"02 • Recherche Internet 4G/5G",20,GREEN);
+        label(mobilePanel,"Sans IP à saisir, sans Wi-Fi domestique ni connexion Freebox. Recherche uniquement dans un index public ; aucun équipement distant n'est sondé pendant la découverte.",TEXT);
+        label(mobilePanel,"La recherche n'est PAS exhaustive. Elle ne révèle pas les webcams privées intégrées aux télévisions ou aux ordinateurs.",MUTED);
 
+        label(mobilePanel,"Type d'appareil recherché",BLUE);
+        typeChooser=new Spinner(this);
+        ArrayAdapter<String> types=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,
+            UniversalDeviceProfiles.TYPES);
+        types.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        typeChooser.setAdapter(types);
+        mobilePanel.addView(typeChooser,new LinearLayout.LayoutParams(-1,dp(52)));
+
+        label(mobilePanel,"Marques prises en compte (sans référence de modèle)",BLUE);
+        brandChooser=new Spinner(this);
+        ArrayAdapter<String> brands=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,
+            UniversalDeviceProfiles.BRANDS);
+        brands.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        brandChooser.setAdapter(brands);
+        mobilePanel.addView(brandChooser,new LinearLayout.LayoutParams(-1,dp(52)));
+
+        label(mobilePanel,"Index Netlas : une clé API personnelle peut être obtenue avec leur formule Community gratuite. Limites de requêtes selon ton compte.",MUTED);
+        netlasKey=new EditText(this);
+        netlasKey.setHint("Clé API Netlas — pas d'adresse IP");
+        netlasKey.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        netlasKey.setSingleLine(true);
+        netlasKey.setTextColor(TEXT);
+        netlasKey.setHintTextColor(MUTED);
+        mobilePanel.addView(netlasKey,new LinearLayout.LayoutParams(-1,dp(52)));
+        label(mobilePanel,"La clé n'est pas sauvegardée par NetworkGuard et n'est transmise qu'au service Netlas via HTTPS.",MUTED);
+        button(mobilePanel,"Ouvrir Netlas pour obtenir une clé gratuite",()->{
+            Intent it=new Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://app.netlas.io/"));
+            try{startActivity(it);}catch(Exception e){
+                indexStatus.setText("Impossible d'ouvrir Netlas : "+e.getMessage());
+            }
+        });
+        button(mobilePanel,"Rechercher sans IP (données publiques)",this::searchPublicIndex);
+        button(mobilePanel,"Guide universel des caméras TV",this::showUniversalGuide);
+        indexStatus=label(mobilePanel,"Prêt. Choisis un type d'appareil. Le mode TV propose un guide ; l'index détecte seulement des services Internet.",BLUE);
+        indexResults=new LinearLayout(this);
+        indexResults.setOrientation(LinearLayout.VERTICAL);
+        mobilePanel.addView(indexResults);
         videoPanel=panel(root);
         title(videoPanel,"Vérification vidéo (mes appareils uniquement)",17,GREEN);
         videoStatus=label(videoPanel,"Aucune vidéo confirmée. Un port ouvert ne démontre PAS une faille.",MUTED);
@@ -307,111 +312,73 @@ public class MainActivity extends Activity {
             throw new Exception("Utilise les données mobiles 4G/5G sans Wi-Fi connecté ni VPN.");
         return active;
     }
-    private void startSampleScan(){
-        if(scanning.get()){mobileStatus.setText("Recherche déjà en cours.");return;}
-        if(!sampleNotice.isChecked()){
-            mobileStatus.setText("Coche d'abord l'avertissement sur les échantillons publics.");return;
+    private void showUniversalGuide(){
+        final int which=brandChooser.getSelectedItemPosition();
+        final String brand=UniversalDeviceProfiles.BRANDS[which];
+        new AlertDialog.Builder(this)
+            .setTitle("Vérification universelle • "+brand)
+            .setMessage(UniversalDeviceProfiles.offlineTvAdvice(brand))
+            .setPositiveButton("Compris",null).show();
+    }
+
+    private void searchPublicIndex(){
+        try{cellularNetwork();}
+        catch(Exception e){indexStatus.setText(e.getMessage());return;}
+        final int type=typeChooser.getSelectedItemPosition();
+        final String token=netlasKey.getText().toString().trim();
+        if(type==2){
+            indexStatus.setText("Les caméras intégrées aux TV ne sont pas identifiables par un index Internet. Choisis 'Guide universel des caméras TV' ; tu pourras faire des vérifications adaptées lorsque tu seras chez toi.");
+            showUniversalGuide();
+            return;
         }
-        final Network net;
-        try{net=cellularNetwork();}
-        catch(Exception e){mobileStatus.setText(e.getMessage());return;}
-        int sample=samplePicker.getSelectedItemPosition();
-        publicResults.removeAllViews();detected=0;totalIpExamined=0;portProfiles.clear();publicHosts.clear();decodedVideoHosts.clear();
-        renderPublicResults();
-        scanning.set(true);
-        mobileStatus.setText("Analyse en 4G/5G de l'échantillon "+(sample+1)+" : 254 IP au maximum.\nServices réseau seulement ; aucune vidéo ouverte.");
+        if(token.isEmpty()){
+            indexStatus.setText("Pour une recherche automatique en arrière-plan, saisis uniquement une clé Netlas (compte Community gratuit). Aucune adresse de tes appareils nécessaire.");
+            return;
+        }
+        indexResults.removeAllViews();
+        indexed.clear();
+        indexStatus.setText("Consultation passive de l'index Netlas en 4G/5G… aucune connexion à une caméra.");
         work.execute(()->{
             try{
-                PublicSampleScanner.scan(net,sample,scanning,new PublicSampleScanner.Listener(){
-                    @Override public void detected(PublicSampleScanner.Host h){
-                        runOnUiThread(()->{
-                            if(!scanning.get())return;
-                            detected++;
-                            publicHosts.add(h);
-                            String profile=h.ports.toString();
-                            portProfiles.put(profile,portProfiles.containsKey(profile)?portProfiles.get(profile)+1:1);
-                            renderPublicResults();
-                        });
-                    }
-                    @Override public void progress(int count,int total){
-                        runOnUiThread(()->{
-                            totalIpExamined=Math.max(totalIpExamined,count);
-                            boolean repeated=false;
-                            for(Integer frequency:portProfiles.values())if(frequency>=8)repeated=true;
-                            boolean anomaly=VideoEvidence.isAnomalousDiscovery(totalIpExamined,detected);
-                            mobileStatus.setText("Analyse : "+count+"/"+total+
-                                " IP • "+detected+" adresse(s) avec réponse TCP (PAS forcément des équipements).\n"+
-                                "Port ouvert ≠ caméra ≠ vulnérabilité."+
-                                (repeated?"\n⚠️ Beaucoup d'IP possèdent exactement les mêmes ports.":"")+
-                                (anomaly?"\n⚠️ FIABILITÉ INSUFFISANTE : proportion anormalement élevée de réponses. Les indices caméra sont suspendus pour ce scan.":""));
-                            if(anomaly)renderPublicResults();
-                        });
-                    }
+                List<NetlasIndex.Item> response=NetlasIndex.search(token,type);
+                runOnUiThread(()->{
+                    indexed.clear();indexed.addAll(response);
+                    indexStatus.setText(response.size()+" observation(s) publiques retournées. Un indice de service ne prouve ni la présence d'une webcam ni l'accès à ses images.");
+                    renderIndexResults();
                 });
-                runOnUiThread(()->mobileStatus.append("\nRecherche terminée ou arrêtée. Aucun résultat ne certifie tes caméras."));
-            }catch(Exception e){runOnUiThread(()->mobileStatus.setText("Erreur de recherche : "+e.getMessage()));}
-            finally{scanning.set(false);}
+            }catch(Exception e){runOnUiThread(()->indexStatus.setText("Recherche indisponible : "+e.getMessage()));}
         });
     }
-    private void renderPublicResults(){
-        if(publicResults==null||listSummary==null||showAllServices==null)return;
-        publicResults.removeAllViews();
-        boolean showAll=showAllServices.isChecked();
-        int likely=0,other=0,shown=0,suspicious=0;
-        boolean anomaly=VideoEvidence.isAnomalousDiscovery(totalIpExamined,detected);
-        for(PublicSampleScanner.Host h:publicHosts){
-            int cat=VideoEvidence.category(h.ports,decodedVideoHosts.contains(h.ip));
-            boolean repetition=VideoEvidence.isRepetitiveProfile(
-                portProfiles.containsKey(h.ports.toString())?portProfiles.get(h.ports.toString()):0);
-            if((repetition||anomaly)&&cat!=3){
-                cat=0; // unverified: not proof that the service has no video
-                suspicious++;
-            }
-            if(cat>=2)likely++;
-            else other++;
-            if(!showAll && cat<2)continue;
-            shown++;
-            LinearLayout row=new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(11),dp(9),dp(11),dp(9));
-            row.setBackground(bg());
-            LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);
-            rp.setMargins(0,dp(4),0,dp(4));
-            publicResults.addView(row,rp);
-            TextView dot=new TextView(this);
-            dot.setText("●");
-            dot.setTextSize(26);
-            int dotColor=cat==3?GREEN:cat==2?0xffffbf69:cat==1?BLUE:MUTED;
-            dot.setTextColor(dotColor);
-            dot.setPadding(dp(2),0,dp(10),0);
-            row.addView(dot);
-            LinearLayout desc=new LinearLayout(this);
-            desc.setOrientation(LinearLayout.VERTICAL);
-            row.addView(desc,new LinearLayout.LayoutParams(0,-2,1f));
-            TextView ip=new TextView(this);
-            ip.setText(h.ip);ip.setTextColor(TEXT);ip.setTextSize(16);
-            desc.addView(ip);
-            TextView details=new TextView(this);
-            details.setTextSize(12);details.setTextColor(MUTED);
-            String type=cat==3?"Images vidéo décodées sur ton appareil (direct à confirmer)"
-                :cat==2?"Indice RTSP : aucune image vérifiée"
-                :cat==1?"Service web uniquement identifié : flux inconnu"
-                :anomaly?"Scan globalement suspect : pas de caméra confirmée"
-                :repetition?"Ports répétés sur plusieurs IP : service non identifié"
-                :"Service non identifié";
-            details.setText(type+" • TCP "+h.ports);
-            desc.addView(details);
-            row.setOnClickListener(v->chooseOwnedHost(h));
+
+    private void renderIndexResults(){
+        if(indexResults==null)return;
+        indexResults.removeAllViews();
+        for(NetlasIndex.Item result:indexed){
+            boolean evidence=decodedVideoHosts.contains(result.ip);
+            LinearLayout entry=new LinearLayout(this);
+            entry.setOrientation(LinearLayout.VERTICAL);
+            entry.setPadding(dp(12),dp(9),dp(12),dp(8));
+            entry.setBackground(bg());
+            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);
+            p.setMargins(0,dp(5),0,dp(5));
+            indexResults.addView(entry,p);
+            String title=(evidence?"● Images décodées (sur équipement confirmé)":"● Observation indexée seulement")+
+                "\n"+result.ip+(result.port>0?":"+result.port:"")+
+                (result.name.isEmpty()?"":" • "+result.name);
+            TextView label=label(entry,title,evidence?GREEN:MUTED);
+            label.setTextSize(14);
+            label(entry,"Protocole indexé : "+result.protocol+
+                (result.lastSeen.isEmpty()?"":"\nObservation : "+result.lastSeen)+
+                "\nAucun test actif effectué.",MUTED);
+            entry.setOnClickListener(v->confirmIndexOwnership(result));
         }
-        listSummary.setText("Affichés : "+shown+" / "+publicHosts.size()+
-            " • Indices RTSP non répétés : "+likely+
-            " • Réponses non fiables/suspectes : "+suspicious+
-            " • Autres : "+(other-suspicious)+
-            (anomaly?"\n⚠️ Scanner non fiable sur cet échantillon : proportion de réponses excessivement élevée. Aucun indice de caméra retenu.":"")+
-            (showAll?"\nToutes les observations sont affichées."
-                :"\nAdresses suspectes et services web masqués, sans conclure à l'absence de vidéo."+
-                "\nCoche la case ci-dessus pour les réafficher."));
+    }
+
+    private void confirmIndexOwnership(NetlasIndex.Item item){
+        List<Integer> ports=new ArrayList<>();
+        if(item.port>0 && item.port<=65535)ports.add(item.port);
+        PublicSampleScanner.Host h=new PublicSampleScanner.Host(item.ip,ports);
+        chooseOwnedHost(h);
     }
 
     private void chooseOwnedHost(PublicSampleScanner.Host h){
@@ -650,7 +617,7 @@ public class MainActivity extends Activity {
     private void showVideoProof(){
         if(!currentVideoIp.isEmpty()){
             decodedVideoHosts.add(currentVideoIp);
-            renderPublicResults();
+            renderIndexResults();
         }
         videoStatus.setTextColor(RED);
         videoStatus.setText("Images reçues sans identifiants depuis la 4G/5G. Vérifie qu'elles viennent bien de TA caméra et qu'elles sont en direct.");

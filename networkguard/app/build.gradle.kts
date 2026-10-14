@@ -6,8 +6,8 @@ android {
         applicationId = "fr.networkguard.audit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.6.0"
+        versionCode = 8
+        versionName = "0.7.0"
     }
     buildTypes { release { isMinifyEnabled = false } }
     compileOptions {
@@ -15,4 +15,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
-dependencies { testImplementation("junit:junit:4.13.2") }
+dependencies {
+    implementation("androidx.media3:media3-exoplayer:1.9.4")
+    implementation("androidx.media3:media3-exoplayer-rtsp:1.9.4")
+    implementation("androidx.media3:media3-ui:1.9.4")
+    testImplementation("junit:junit:4.13.2")
+}

@@ -32,6 +32,14 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.VideoView;
+import android.widget.EditText;
+import android.text.InputType;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.Player;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.rtsp.RtspMediaSource;
+import androidx.media3.ui.PlayerView;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +50,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+@androidx.media3.common.util.UnstableApi
 public class MainActivity extends Activity {
     private static final int LOCATION_REQUEST=107;
     private static final int BACK=0xff0b1728, PANEL=0xff1a2d43,
@@ -54,6 +63,8 @@ public class MainActivity extends Activity {
     private Spinner samplePicker;
     private CheckBox sampleNotice;
     private VideoView player;
+    private PlayerView rtspView;
+    private ExoPlayer rtspPlayer;
     private ImageView mjpegImage;
     private final MjpegReader mjpegReader=new MjpegReader();
     private final ExecutorService work=Executors.newSingleThreadExecutor();
@@ -85,7 +96,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.6.0 • Radars Wi-Fi et 4G/5G • filtre vidéo",MUTED);
+        label(root,"0.7.0 • RTSP sur appareils autorisés • filtre anti-faux positifs",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -121,9 +132,9 @@ public class MainActivity extends Activity {
             mobileStatus.setText("Arrêt demandé. Les résultats déjà trouvés restent affichés.");
         });
         mobileStatus=label(mobilePanel,"Aucune recherche effectuée.",BLUE);
-        label(mobilePanel,"● Vert : vraies images décodées sur TON appareil.\n● Orange : port RTSP possible, vidéo NON vérifiée.\n● Bleu : web accessible, vidéo inconnue.\n● Gris : nature inconnue.",MUTED);
+        label(mobilePanel,"● Vert : vraie image décodée sur un appareil confirmé.\n● Orange : seul indice RTSP, sans image vérifiée.\n● Bleu : service web non identifié.\n● Gris : profil de ports répété/suspect ou autre.",MUTED);
         showAllServices=new CheckBox(this);
-        showAllServices.setText("Afficher aussi les services web et autres (aucune preuve de vidéo)");
+        showAllServices.setText("Afficher aussi les services web et profils suspects (non prouvés)");
         showAllServices.setTextSize(13);
         showAllServices.setTextColor(TEXT);
         showAllServices.setChecked(false);
@@ -139,6 +150,10 @@ public class MainActivity extends Activity {
         player=new VideoView(this);
         videoPanel.addView(player,new LinearLayout.LayoutParams(-1,dp(210)));
         player.setVisibility(View.GONE);
+        rtspView=new PlayerView(this);
+        rtspView.setUseController(false);
+        videoPanel.addView(rtspView,new LinearLayout.LayoutParams(-1,dp(245)));
+        rtspView.setVisibility(View.GONE);
         mjpegImage=new ImageView(this);
         mjpegImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
         videoPanel.addView(mjpegImage,new LinearLayout.LayoutParams(-1,dp(210)));
@@ -402,7 +417,7 @@ public class MainActivity extends Activity {
             .setTitle("Tester uniquement MON équipement")
             .setView(content)
             .setNegativeButton("Annuler",null)
-            .setPositiveButton("Tester mon flux",(d,which)->probeOwnedHost(h))
+            .setPositiveButton("Choisir le test",(d,which)->ownedProtocolMenu(h))
             .create();
         dialog.setOnShowListener(d->{
             Button positive=dialog.getButton(AlertDialog.BUTTON_POSITIVE);
@@ -411,13 +426,100 @@ public class MainActivity extends Activity {
         });
         dialog.show();
     }
+    private void ownedProtocolMenu(PublicSampleScanner.Host host){
+        final boolean rtsp=host.ports.contains(554)||host.ports.contains(8554);
+        String[] methods={
+            "Tester les flux HTTP(S) standards",
+            rtsp ? "Lire un flux RTSP de MON appareil (554/8554)" :
+                "RTSP : aucun port habituel détecté"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("Test autorisé • "+host.ip)
+            .setItems(methods,(dialog,choice)->{
+                if(choice==0)probeOwnedHost(host);
+                else if(rtsp)chooseRtspPath(host);
+                else videoStatus.setText("Aucun port RTSP habituel détecté. Cela ne prouve pas l'absence de vidéo.");
+            })
+            .setNegativeButton("Annuler",null).show();
+    }
+
+    private void chooseRtspPath(PublicSampleScanner.Host host){
+        int rtspPort=host.ports.contains(554)?554:8554;
+        final String[] paths={"/", "/live", "/live.sdp", "/Streaming/Channels/101",
+            "/cam/realmonitor?channel=1&subtype=0"};
+        new AlertDialog.Builder(this)
+            .setTitle("Chemin RTSP de TA caméra")
+            .setMessage("Un port 554 ouvert ne révèle pas l'URL du flux. Choisis un chemin compatible avec TON modèle ou saisis-en un. Aucun identifiant n'est utilisé.")
+            .setPositiveButton("Chemins courants",(d,which)->new AlertDialog.Builder(this)
+                .setTitle("Essai manuel : un seul chemin")
+                .setItems(paths,(dlg,index)->playRtsp(host.ip,rtspPort,paths[index]))
+                .setNegativeButton("Annuler",null).show())
+            .setNeutralButton("Chemin personnalisé",(d,which)->{
+                EditText path=new EditText(this);
+                path.setSingleLine(true);
+                path.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
+                path.setText("/");
+                new AlertDialog.Builder(this)
+                    .setTitle("Chemin RTSP sur TON équipement")
+                    .setView(path)
+                    .setNegativeButton("Annuler",null)
+                    .setPositiveButton("Voir le direct",(dlg,choice)->playRtsp(host.ip,rtspPort,
+                        path.getText().toString()))
+                    .show();
+            })
+            .setNegativeButton("Annuler",null)
+            .show();
+    }
+
+    private void playRtsp(String host,int port,String path){
+        try{cellularNetwork();}
+        catch(Exception e){videoStatus.setText(e.getMessage());return;}
+        if(path==null||!path.startsWith("/")||path.contains("@")||path.contains("://")||
+            path.contains("#")||path.contains("\n")||path.length()>300){
+            videoStatus.setText("Chemin RTSP invalide : indique seulement /chemin, sans identifiants.");
+            return;
+        }
+        stopVideo();
+        videoPlaying=true;gotFrame=false;currentVideoIp=host;
+        videoStatus.setTextColor(BLUE);
+        videoStatus.setText("Connexion RTSP depuis la 4G/5G : attente d'images réellement décodées. Aucun compte utilisé.");
+        try{
+            String uri="rtsp://"+host+":"+port+path;
+            rtspPlayer=new ExoPlayer.Builder(this).build();
+            rtspView.setPlayer(rtspPlayer);
+            rtspView.setVisibility(View.VISIBLE);
+            rtspPlayer.addListener(new Player.Listener(){
+                @Override public void onRenderedFirstFrame(){
+                    if(videoPlaying&&!gotFrame){
+                        gotFrame=true;
+                        showVideoProof();
+                    }
+                }
+                @Override public void onPlayerError(PlaybackException e){
+                    if(!videoPlaying)return;
+                    videoStatus.setTextColor(RED);
+                    videoStatus.setText("RTSP non lisible ou accès refusé : "+e.getErrorCodeName()+
+                        ". Aucun flux démontré. Le port ouvert seul n'est pas une preuve.");
+                }
+            });
+            rtspPlayer.setMediaSource(new RtspMediaSource.Factory()
+                .setForceUseRtpTcp(true)
+                .setTimeoutMs(6000)
+                .createMediaSource(MediaItem.fromUri(uri)));
+            rtspPlayer.prepare();
+            rtspPlayer.play();
+        }catch(Exception e){
+            stopVideo();
+            videoStatus.setText("Impossible de démarrer le lecteur RTSP : "+e.getMessage());
+        }
+    }
+
     private void probeOwnedHost(PublicSampleScanner.Host h){
         final Network mobile;
         try{mobile=cellularNetwork();}
         catch(Exception e){videoStatus.setText(e.getMessage());return;}
         stopVideo();
-        videoStatus.setText("Vérification HTTP(S) sans compte sur TON adresse "+h.ip+
-            "… (RTSP 554 non pris en charge dans cette version).");
+        videoStatus.setText("Vérification HTTP(S) sans compte sur l’adresse confirmée "+h.ip+". Le RTSP est un test distinct.");
         work.execute(()->{
             List<URL> candidates=new ArrayList<>();
             String[] paths={"/video","/mjpeg","/video.mjpg","/stream","/live.m3u8"};
@@ -434,7 +536,7 @@ public class MainActivity extends Activity {
             }
             runOnUiThread(()->{
                 if(candidates.isEmpty()){
-                    videoStatus.setText("Aucun flux HTTP(S) standard trouvé. Le port TCP 554 n’est pas une preuve de vidéo : RTSP, accès cloud et protocoles propriétaires ne sont pas testés.");
+                    videoStatus.setText("Aucun flux HTTP(S) standard trouvé. Le test RTSP est disponible séparément sur ton équipement confirmé ; les clouds propriétaires ne sont pas vérifiés.");
                     return;
                 }
                 videoStatus.setText(candidates.size()+" réponse(s) annonçant un média. La lecture réelle reste à confirmer.");
@@ -506,6 +608,12 @@ public class MainActivity extends Activity {
     }
     private void stopVideo(){
         videoPlaying=false;gotFrame=false;
+        if(rtspPlayer!=null){
+            rtspView.setPlayer(null);
+            rtspPlayer.release();
+            rtspPlayer=null;
+        }
+        if(rtspView!=null)rtspView.setVisibility(View.GONE);
         mjpegReader.stop();
         if(player!=null){player.stopPlayback();player.setVisibility(View.GONE);}
         if(mjpegImage!=null){mjpegImage.setImageDrawable(null);mjpegImage.setVisibility(View.GONE);}

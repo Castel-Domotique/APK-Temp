@@ -21,6 +21,8 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -65,6 +67,9 @@ public class MainActivity extends Activity {
     private VideoView player;
     private PlayerView rtspView;
     private ExoPlayer rtspPlayer;
+    private final Handler rtspHandler=new Handler(Looper.getMainLooper());
+    private Runnable rtspWatchdog;
+    private int playbackGeneration=0;
     private ImageView mjpegImage;
     private final MjpegReader mjpegReader=new MjpegReader();
     private final ExecutorService work=Executors.newSingleThreadExecutor();
@@ -96,7 +101,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.7.0 • RTSP sur appareils autorisés • filtre anti-faux positifs",MUTED);
+        label(root,"0.7.1 • RTSP : diagnostic, arrêt automatique et filtre anti-faux positifs",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -490,8 +495,16 @@ public class MainActivity extends Activity {
         }
         stopVideo();
         videoPlaying=true;gotFrame=false;currentVideoIp=host;
+        final int generation=playbackGeneration;
         videoStatus.setTextColor(BLUE);
-        videoStatus.setText("Connexion RTSP depuis la 4G/5G : attente d'images réellement décodées. Aucun compte utilisé.");
+        videoStatus.setText("RTSP : connexion en cours depuis la 4G/5G. Attente d'une image réelle sur "+
+            host+":"+port+path+". Abandon automatique si aucune image sous 18 secondes.");
+        rtspWatchdog=()->{
+            if(generation!=playbackGeneration||!videoPlaying||gotFrame)return;
+            failRtsp(generation,"Temps d'attente dépassé (18 s) : aucune image reçue. "+
+                "Le chemin RTSP peut être incorrect, l'accès peut être protégé ou le service ne pas être un flux caméra.");
+        };
+        rtspHandler.postDelayed(rtspWatchdog,18000);
         try{
             String uri="rtsp://"+host+":"+port+path;
             rtspPlayer=new ExoPlayer.Builder(this).build();
@@ -499,28 +512,47 @@ public class MainActivity extends Activity {
             rtspView.setVisibility(View.VISIBLE);
             rtspPlayer.addListener(new Player.Listener(){
                 @Override public void onRenderedFirstFrame(){
-                    if(videoPlaying&&!gotFrame){
+                    if(generation!=playbackGeneration||!videoPlaying)return;
+                    if(!gotFrame){
                         gotFrame=true;
+                        if(rtspWatchdog!=null)rtspHandler.removeCallbacks(rtspWatchdog);
+                        rtspWatchdog=null;
                         showVideoProof();
                     }
                 }
+                @Override public void onPlaybackStateChanged(int state){
+                    if(generation!=playbackGeneration||!videoPlaying||gotFrame)return;
+                    if(state==Player.STATE_BUFFERING)
+                        videoStatus.setText("RTSP : négociation/décodage en cours, aucune image vérifiée. Limite 18 s.");
+                    else if(state==Player.STATE_READY)
+                        videoStatus.setText("RTSP : connexion établie, attente de la première image décodée.");
+                    else if(state==Player.STATE_ENDED)
+                        failRtsp(generation,"Le média s'est terminé sans aucune image décodée.");
+                }
                 @Override public void onPlayerError(PlaybackException e){
-                    if(!videoPlaying)return;
-                    videoStatus.setTextColor(RED);
-                    videoStatus.setText("RTSP non lisible ou accès refusé : "+e.getErrorCodeName()+
-                        ". Aucun flux démontré. Le port ouvert seul n'est pas une preuve.");
+                    if(generation!=playbackGeneration||!videoPlaying)return;
+                    String extra=e.getCause()==null?"":(": "+e.getCause().getClass().getSimpleName());
+                    failRtsp(generation,"Erreur RTSP "+e.getErrorCodeName()+extra+
+                        ". Vérifie que le flux de ton équipement est correct et sans authentification.");
                 }
             });
+            // Default RTSP transport: UDP where supported, TCP fallback when necessary.
+            // Forcing RTP/TCP exclusively incorrectly rejects some legitimate cameras.
             rtspPlayer.setMediaSource(new RtspMediaSource.Factory()
-                .setForceUseRtpTcp(true)
                 .setTimeoutMs(6000)
                 .createMediaSource(MediaItem.fromUri(uri)));
             rtspPlayer.prepare();
             rtspPlayer.play();
         }catch(Exception e){
-            stopVideo();
-            videoStatus.setText("Impossible de démarrer le lecteur RTSP : "+e.getMessage());
+            failRtsp(generation,"Impossible de démarrer le lecteur RTSP : "+e.getClass().getSimpleName());
         }
+    }
+
+    private void failRtsp(int generation,String reason){
+        if(generation!=playbackGeneration)return;
+        stopVideo();
+        videoStatus.setTextColor(RED);
+        videoStatus.setText(reason+" Aucun flux vidéo démontré. Un écran noir ne constitue pas une preuve d'absence de vidéo.");
     }
 
     private void probeOwnedHost(PublicSampleScanner.Host h){
@@ -616,7 +648,12 @@ public class MainActivity extends Activity {
         videoStatus.setText("Images reçues sans identifiants depuis la 4G/5G. Vérifie qu'elles viennent bien de TA caméra et qu'elles sont en direct.");
     }
     private void stopVideo(){
+        playbackGeneration++;
         videoPlaying=false;gotFrame=false;
+        if(rtspWatchdog!=null){
+            rtspHandler.removeCallbacks(rtspWatchdog);
+            rtspWatchdog=null;
+        }
         if(rtspPlayer!=null){
             rtspView.setPlayer(null);
             rtspPlayer.release();

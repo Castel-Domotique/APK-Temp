@@ -14,6 +14,12 @@ public final class VideoEvidenceTest {
         assertTrue(VideoEvidence.isRepetitiveProfile(8));
         assertEquals(2,VideoEvidence.category(Arrays.asList(80,443,554),false));
     }
+    @Test public void implausiblyHighTcpHitRateRequiresSanityWarning(){
+        assertTrue(VideoEvidence.isAnomalousDiscovery(210,206));
+        assertTrue(VideoEvidence.isAnomalousDiscovery(100,75));
+        assertFalse(VideoEvidence.isAnomalousDiscovery(100,12));
+        assertFalse(VideoEvidence.isAnomalousDiscovery(20,19));
+    }
     @Test public void genericWebRemainsUncertain(){
         assertEquals(1,VideoEvidence.category(Arrays.asList(80,443),false));
         assertFalse(VideoEvidence.hasVideoProtocolClue(Arrays.asList(80,443)));

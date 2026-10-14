@@ -347,9 +347,15 @@ public class MainActivity extends Activity {
         if(publicResults==null||listSummary==null||showAllServices==null)return;
         publicResults.removeAllViews();
         boolean showAll=showAllServices.isChecked();
-        int likely=0,other=0,shown=0;
+        int likely=0,other=0,shown=0,suspicious=0;
         for(PublicSampleScanner.Host h:publicHosts){
             int cat=VideoEvidence.category(h.ports,decodedVideoHosts.contains(h.ip));
+            boolean repetition=VideoEvidence.isRepetitiveProfile(
+                portProfiles.containsKey(h.ports.toString())?portProfiles.get(h.ports.toString()):0);
+            if(repetition&&cat!=3){
+                cat=0; // unverified: not proof that the service has no video
+                suspicious++;
+            }
             if(cat>=2)likely++;
             else other++;
             if(!showAll && cat<2)continue;
@@ -379,17 +385,20 @@ public class MainActivity extends Activity {
             details.setTextSize(12);details.setTextColor(MUTED);
             String type=cat==3?"Images vidéo décodées sur ton appareil (direct à confirmer)"
                 :cat==2?"Indice RTSP : aucune image vérifiée"
-                :cat==1?"Service web seulement : flux inconnu"
+                :cat==1?"Service web uniquement identifié : flux inconnu"
+                :repetition?"Ports répétés sur plusieurs IP : service non identifié"
                 :"Service non identifié";
             details.setText(type+" • TCP "+h.ports);
             desc.addView(details);
             row.setOnClickListener(v->chooseOwnedHost(h));
         }
         listSummary.setText("Affichés : "+shown+" / "+publicHosts.size()+
-            " • Indices vidéo : "+likely+" • Autres : "+other+
-            (showAll?"\nTous les services détectés sont visibles."
-                :"\nServices sans indice RTSP masqués (PAS déclarés sans vidéo)."+
-                "\nActive la case ci-dessus pour les retrouver."));
+            " • Indices RTSP non répétés : "+likely+
+            " • Profils répétitifs à vérifier : "+suspicious+
+            " • Autres : "+(other-suspicious)+
+            (showAll?"\nToutes les observations sont affichées."
+                :"\nProfils répétitifs et services web masqués par défaut, sans conclure à l'absence de vidéo."+
+                "\nCoche la case ci-dessus pour tous les afficher."));
     }
 
     private void chooseOwnedHost(PublicSampleScanner.Host h){

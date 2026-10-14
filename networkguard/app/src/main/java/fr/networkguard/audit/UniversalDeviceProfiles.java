@@ -13,7 +13,7 @@ public final class UniversalDeviceProfiles {
         "Caméra IP / RTSP",
         "Webcam de PC / USB",
         "Smart TV avec caméra intégrée",
-        "Tous types (indices seulement)"
+        "Tous fabricants de caméras IP (RTSP)"
     };
     public static String manufacturer(String text){
         if(text==null)return "Non identifiée";
@@ -33,6 +33,14 @@ public final class UniversalDeviceProfiles {
             +"mais ce n'est pas une preuve d'images accessibles.";
         return "Universalité des catégories et des fabricants, pas de détection garantie des flux privés.";
     }
+    public static String offlineWebcamAdvice(){
+        return "Une webcam intégrée ou USB n'a généralement pas d'adresse Internet autonome. "+
+            "Il faut examiner l'ordinateur, les applications qui utilisent la caméra, leurs autorisations et les accès distants.\n\n"+
+            "Sur Windows/macOS/Linux : vérifier les autorisations caméra, les applications de visioconférence, "+
+            "le partage de bureau et les mises à jour.\n\n"+
+            "Un index Internet ne peut pas prouver que quelqu'un active la webcam.";
+    }
+
     public static String offlineTvAdvice(String brand){
         return "Contrôles universels pour "+brand+" :\n"+
             "• Confirmer physiquement la présence d'une caméra (certaines TV n'en ont pas).\n"+

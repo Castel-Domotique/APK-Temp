@@ -1,383 +1,423 @@
 package fr.networkguard.audit;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.os.Bundle;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.content.Context;
+import android.location.LocationManager;
+import android.media.MediaPlayer;
 import android.net.ConnectivityManager;
-import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.media.MediaPlayer;
+import android.net.wifi.ScanResult;
+import android.net.wifi.WifiManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.SystemClock;
+import android.provider.Settings;
 import android.view.View;
-import android.widget.*;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.*;
-import java.util.*;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Spinner;
+import android.widget.TextView;
+import android.widget.VideoView;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends Activity {
-    private final int BACK=0xff0b1728, PANEL=0xff1a2d43, TEXT=Color.WHITE,
-        MUTED=0xffbecfe0, GREEN=0xff68e1b2, BLUE=0xff91c5ff, RED=0xffffa2a2;
-    private LinearLayout root,wifiPanel,mobilePanel,devices,videoPanel,videoChoices;
-    private TextView localStatus,ipStatus,remoteStatus,videoStatus;
+    private static final int LOCATION_REQUEST=107;
+    private static final int BACK=0xff0b1728, PANEL=0xff1a2d43,
+        TEXT=Color.WHITE, MUTED=0xffbecfe0, GREEN=0xff68e1b2,
+        BLUE=0xff91c5ff, RED=0xffffa2a2;
+    private LinearLayout root,wifiPanel,mobilePanel,wifiResults,publicResults,videoPanel;
+    private TextView wifiStatus,mobileStatus,videoStatus;
+    private Spinner samplePicker;
+    private CheckBox sampleNotice;
     private VideoView player;
-    private ImageView mjpegView;
-    private CheckBox ownedNetwork,lookupAllowed;
+    private ImageView mjpegImage;
     private final MjpegReader mjpegReader=new MjpegReader();
-    private final ExecutorService tasks=Executors.newSingleThreadExecutor();
+    private final ExecutorService work=Executors.newSingleThreadExecutor();
     private final AtomicBoolean scanning=new AtomicBoolean(false);
-    private boolean showingVideo=false;
-    private boolean receivedFrame=false;
-    private int found=0;
-    private String homeIp="";
-    private final List<HomeWifiScanner.Host> discovered=new ArrayList<>();
+    private WifiManager wifi;
+    private boolean wifiReceiverRegistered=false,videoPlaying=false,gotFrame=false;
+    private int detected=0;
 
-    @Override public void onCreate(Bundle b){
-        super.onCreate(b);
+    private final BroadcastReceiver wifiReceiver=new BroadcastReceiver() {
+        @Override public void onReceive(Context c,Intent intent){
+            if(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION.equals(intent.getAction())){
+                boolean fresh=intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED,false);
+                displayRadioResults(fresh);
+            }
+        }
+    };
+
+    @Override public void onCreate(Bundle bundle){
+        super.onCreate(bundle);
         getWindow().setStatusBarColor(BACK);
         getWindow().setNavigationBarColor(BACK);
-        ScrollView screen=new ScrollView(this);
-        screen.setFillViewport(true);screen.setBackgroundColor(BACK);
+        wifi=(WifiManager)getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        ScrollView scroller=new ScrollView(this);
+        scroller.setFillViewport(true);scroller.setBackgroundColor(BACK);
         root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(17),dp(23),dp(17),dp(30));
-        screen.addView(root);setContentView(screen);
+        root.setPadding(dp(16),dp(24),dp(16),dp(28));
+        scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.4.0 — Deux scanners séparés • Aucune IP à saisir",MUTED);
-
+        label(root,"0.5.0 • Wi-Fi sans connexion + échantillons Internet en 4G/5G",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
-        smallButton(nav,"Scanner Wi-Fi",()->showMode(true));
-        smallButton(nav,"Scanner 4G/5G",()->showMode(false));
+        navButton(nav,"Radar Wi-Fi",()->showMode(true));
+        navButton(nav,"Radar 4G/5G",()->showMode(false));
 
         wifiPanel=panel(root);
-        title(wifiPanel,"01  Ton Wi-Fi domestique",20,GREEN);
-        label(wifiPanel,"Découvre les appareils sur le réseau privé auquel ton téléphone est connecté, sans compte Freebox.",MUTED);
-        label(wifiPanel,"Ce mode est LOCAL. Une caméra accessible ici n'est pas forcément accessible depuis Internet.",BLUE);
-        ownedNetwork=new CheckBox(this);
-        ownedNetwork.setText("Je confirme que ce Wi-Fi est chez moi ou que j'ai l'autorisation de le tester.");
-        ownedNetwork.setTextColor(TEXT);ownedNetwork.setTextSize(13);
-        wifiPanel.addView(ownedNetwork);
-        lookupAllowed=new CheckBox(this);
-        lookupAllowed.setText("Déterminer mon IP publique avec api4.ipify.org pour le test 4G ultérieur.");
-        lookupAllowed.setTextColor(TEXT);lookupAllowed.setTextSize(13);
-        lookupAllowed.setChecked(true);wifiPanel.addView(lookupAllowed);
-        label(wifiPanel,"Cette simple consultation HTTPS ne donne aucun accès à ta Freebox. Sans elle, le mode extérieur ne peut pas savoir quelle adresse tester.",MUTED);
-        button(wifiPanel,"Scanner mon Wi-Fi",this::startWifiScan);
-        button(wifiPanel,"Arrêter le scan Wi-Fi",()->{
-            scanning.set(false);
-            localStatus.setText("Arrêt demandé. Les appareils déjà découverts restent affichés.");
-        });
-        localStatus=label(wifiPanel,"En attente du scan Wi-Fi.",BLUE);
-        devices=new LinearLayout(this);devices.setOrientation(LinearLayout.VERTICAL);
-        wifiPanel.addView(devices);
+        title(wifiPanel,"01 • Wi-Fi sans connexion",20,GREEN);
+        label(wifiPanel,"Recherche les bornes Wi-Fi à portée radio. Aucune connexion au réseau et aucun mot de passe.",TEXT);
+        label(wifiPanel,"Une caméra qui émet son propre Wi-Fi peut apparaître. Les caméras cachées derrière une box ne sont PAS visibles par ce scan.",MUTED);
+        label(wifiPanel,"Android exige la localisation précise autorisée et le service Position activé pour lire les réseaux Wi-Fi. NetworkGuard ne lit pas tes coordonnées GPS.",MUTED);
+        button(wifiPanel,"Détecter les réseaux Wi-Fi à proximité",this::startRadioScan);
+        wifiStatus=label(wifiPanel,"Active le Wi-Fi sans te connecter, puis lance le radar.",BLUE);
+        wifiResults=new LinearLayout(this);wifiResults.setOrientation(LinearLayout.VERTICAL);
+        wifiPanel.addView(wifiResults);
 
         mobilePanel=panel(root);
-        title(mobilePanel,"02  Test extérieur 4G/5G",20,GREEN);
-        label(mobilePanel,"Désactive le Wi-Fi et le VPN. Le téléphone teste l'adresse publique détectée précédemment chez toi, sans utiliser les identifiants ni les permissions locales.",MUTED);
-        label(mobilePanel,"Le test ne présume PAS qu'un port ouvert donne accès à la vidéo. Il ne démontre pas la sécurité des caméras utilisant seulement un cloud.",MUTED);
-        ipStatus=label(mobilePanel,"",BLUE);
-        button(mobilePanel,"Tester l'exposition depuis la 4G/5G",this::startMobileScan);
-        remoteStatus=label(mobilePanel,"Aucun test extérieur effectué.",MUTED);
-        videoChoices=new LinearLayout(this);videoChoices.setOrientation(LinearLayout.VERTICAL);
-        mobilePanel.addView(videoChoices);
+        title(mobilePanel,"02 • 4G/5G sans IP mémorisée",20,GREEN);
+        label(mobilePanel,"Prototype indépendant de Shodan : connexion TCP sur 254 adresses publiques d'un échantillon. Aucune IP de chez toi n'est demandée ni récupérée.",TEXT);
+        label(mobilePanel,"IMPORTANT : ces échantillons viennent du script reçu. Leur nom ne donne AUCUNE information fiable sur leur ville, et leur chance de contenir tes caméras est très faible.",RED);
+        samplePicker=new Spinner(this);
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_item,PublicSampleScanner.SAMPLE_NAMES);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        samplePicker.setAdapter(adapter);
+        mobilePanel.addView(samplePicker,new LinearLayout.LayoutParams(-1,dp(52)));
+        sampleNotice=new CheckBox(this);
+        sampleNotice.setText("J'ai compris : ce sont des réseaux publics tiers. Seule une connexion TCP est tentée. Je ne demanderai la vidéo que pour un équipement qui m'appartient.");
+        sampleNotice.setTextSize(13);sampleNotice.setTextColor(TEXT);
+        mobilePanel.addView(sampleNotice);
+        button(mobilePanel,"Rechercher les services TCP dans cet échantillon",this::startSampleScan);
+        button(mobilePanel,"Arrêter la recherche",()->{
+            scanning.set(false);
+            mobileStatus.setText("Arrêt demandé. Les résultats déjà trouvés restent affichés.");
+        });
+        mobileStatus=label(mobilePanel,"Aucune recherche effectuée.",BLUE);
+        publicResults=new LinearLayout(this);publicResults.setOrientation(LinearLayout.VERTICAL);
+        mobilePanel.addView(publicResults);
 
         videoPanel=panel(root);
-        title(videoPanel,"Preuve vidéo réelle",18,GREEN);
-        videoStatus=label(videoPanel,"Aucune preuve : le programme n'invente jamais une vidéo.",MUTED);
+        title(videoPanel,"Vérification vidéo (mes appareils uniquement)",17,GREEN);
+        videoStatus=label(videoPanel,"Aucune vidéo confirmée. Un port ouvert ne démontre PAS une faille.",MUTED);
         player=new VideoView(this);
-        videoPanel.addView(player,new LinearLayout.LayoutParams(-1,dp(210)));player.setVisibility(View.GONE);
-        mjpegView=new ImageView(this);
-        mjpegView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        videoPanel.addView(mjpegView,new LinearLayout.LayoutParams(-1,dp(210)));mjpegView.setVisibility(View.GONE);
-        button(videoPanel,"Arrêter le direct",this::stopVideo);
-        label(root,"Résultats limités : port détecté ≠ faille ; image locale ≠ faille Internet ; absence de flux ≠ sécurité garantie. Le cloud propriétaire nécessite des vérifications propres au fabricant.",MUTED);
-        homeIp=getPreferences(0).getString("home_public_ip","");
-        renderStoredIp();
+        videoPanel.addView(player,new LinearLayout.LayoutParams(-1,dp(210)));
+        player.setVisibility(View.GONE);
+        mjpegImage=new ImageView(this);
+        mjpegImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        videoPanel.addView(mjpegImage,new LinearLayout.LayoutParams(-1,dp(210)));
+        mjpegImage.setVisibility(View.GONE);
+        button(videoPanel,"Arrêter la lecture",this::stopVideo);
+        label(root,"Limites : les réseaux Wi-Fi ne donnent pas accès aux appareils derrière les routeurs ; les échantillons d'IP ne représentent pas une région. Aucun résultat ne prouve la sécurité d'un équipement cloud.",MUTED);
+        registerWifiReceiver();
         showMode(true);
     }
 
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
-    private GradientDrawable bg(){GradientDrawable d=new GradientDrawable();d.setColor(PANEL);d.setCornerRadius(dp(13));return d;}
+    private GradientDrawable bg(){
+        GradientDrawable d=new GradientDrawable();d.setColor(PANEL);d.setCornerRadius(dp(12));return d;
+    }
     private LinearLayout panel(LinearLayout parent){
-        LinearLayout view=new LinearLayout(this);view.setOrientation(LinearLayout.VERTICAL);
-        view.setPadding(dp(12),dp(14),dp(12),dp(15));view.setBackground(bg());
+        LinearLayout out=new LinearLayout(this);out.setOrientation(LinearLayout.VERTICAL);
+        out.setPadding(dp(13),dp(14),dp(13),dp(17));out.setBackground(bg());
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);
-        p.setMargins(0,dp(13),0,dp(6));parent.addView(view,p);return view;
+        p.setMargins(0,dp(13),0,dp(7));parent.addView(out,p);return out;
     }
-    private TextView label(LinearLayout parent,String value,int color){
-        TextView t=new TextView(this);t.setText(value);t.setTextColor(color);t.setTextSize(13);
-        t.setPadding(0,dp(4),0,dp(7));parent.addView(t);return t;
+    private TextView label(LinearLayout container,String s,int color){
+        TextView t=new TextView(this);t.setText(s);t.setTextColor(color);t.setTextSize(13);
+        t.setPadding(0,dp(5),0,dp(8));container.addView(t);return t;
     }
-    private TextView title(LinearLayout parent,String value,int size,int color){
-        TextView t=label(parent,value,color);t.setTextSize(size);t.setPadding(0,0,0,dp(8));return t;
+    private void title(LinearLayout container,String s,int size,int color){
+        TextView t=label(container,s,color);t.setTextSize(size);
     }
-    private void button(LinearLayout parent,String text,Runnable action){
-        Button btn=new Button(this);btn.setAllCaps(false);btn.setText(text);btn.setTextSize(13);
-        btn.setTextColor(BACK);
-        GradientDrawable d=new GradientDrawable();d.setColor(GREEN);d.setCornerRadius(dp(9));btn.setBackground(d);
-        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(46));
-        p.setMargins(0,dp(7),0,dp(5));parent.addView(btn,p);
-        btn.setOnClickListener(v->action.run());
+    private void button(LinearLayout container,String s,Runnable action){
+        Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextSize(13);b.setTextColor(BACK);
+        GradientDrawable d=new GradientDrawable();d.setColor(GREEN);d.setCornerRadius(dp(9));b.setBackground(d);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(50));p.setMargins(0,dp(8),0,dp(5));
+        container.addView(b,p);b.setOnClickListener(v->action.run());
     }
-    private void smallButton(LinearLayout parent,String text,Runnable action){
-        Button btn=new Button(this);btn.setText(text);btn.setAllCaps(false);btn.setTextSize(12);
-        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(51),1);
-        p.setMargins(dp(3),dp(5),dp(3),dp(5));parent.addView(btn,p);
-        btn.setOnClickListener(v->action.run());
+    private void navButton(LinearLayout container,String s,Runnable action){
+        Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextSize(12);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(53),1);
+        p.setMargins(dp(2),dp(5),dp(2),dp(5));container.addView(b,p);b.setOnClickListener(v->action.run());
     }
-    private void showMode(boolean wifi){
+    private void showMode(boolean radio){
+        if(wifiPanel!=null)wifiPanel.setVisibility(radio?View.VISIBLE:View.GONE);
+        if(mobilePanel!=null)mobilePanel.setVisibility(radio?View.GONE:View.VISIBLE);
         stopVideo();
-        wifiPanel.setVisibility(wifi?View.VISIBLE:View.GONE);
-        mobilePanel.setVisibility(wifi?View.GONE:View.VISIBLE);
-        videoPanel.setVisibility(View.VISIBLE);
-        renderStoredIp();
     }
-    private Network requireNetwork(int transport)throws Exception{
+    private void registerWifiReceiver(){
+        IntentFilter filter=new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+        if(Build.VERSION.SDK_INT>=33)
+            registerReceiver(wifiReceiver,filter,Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(wifiReceiver,filter);
+        wifiReceiverRegistered=true;
+    }
+    private boolean locationActive(){
+        LocationManager lm=(LocationManager)getSystemService(Context.LOCATION_SERVICE);
+        if(lm==null)return false;
+        if(Build.VERSION.SDK_INT>=28)return lm.isLocationEnabled();
+        return lm.isProviderEnabled(LocationManager.GPS_PROVIDER)||
+            lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+    }
+    private void startRadioScan(){
+        if(wifi==null||!wifi.isWifiEnabled()){
+            wifiStatus.setText("Wi-Fi désactivé. Active-le sans te connecter à un réseau.");
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));return;
+        }
         ConnectivityManager cm=(ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
-        Network net=cm.getActiveNetwork();
-        NetworkCapabilities c=net==null?null:cm.getNetworkCapabilities(net);
-        if(c==null||!c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)||
-                c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)||!c.hasTransport(transport)||
-                (transport==NetworkCapabilities.TRANSPORT_CELLULAR && c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)))
-            throw new Exception(transport==NetworkCapabilities.TRANSPORT_WIFI?
-                "Connecte-toi à ton Wi-Fi privé et désactive le VPN.":
-                "Désactive Wi-Fi et VPN puis utilise uniquement les données mobiles 4G/5G.");
-        return net;
-    }
-    private void startWifiScan(){
-        if(!ownedNetwork.isChecked()){
-            localStatus.setText("Autorisation nécessaire : coche la confirmation de propriété du réseau.");
+        Network active=cm.getActiveNetwork();
+        NetworkCapabilities cap=active==null?null:cm.getNetworkCapabilities(active);
+        if(cap!=null&&cap.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)){
+            wifiStatus.setText("Ton téléphone est connecté au Wi-Fi. Déconnecte-le : ce mode fonctionne SANS connexion.");
             return;
         }
-        if(scanning.get()){
-            localStatus.setText("Un scan Wi-Fi est déjà en cours.");return;
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED){
+            wifiStatus.setText("Autorise la position précise pour afficher les points d'accès détectés (exigence Android).");
+            requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION},LOCATION_REQUEST);
+            return;
         }
-        final Network wifi;final LinkProperties lp;
+        if(!locationActive()){
+            wifiStatus.setText("Active Position dans les réglages Android, sans nécessité de partager tes coordonnées avec NetworkGuard.");
+            startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));return;
+        }
         try{
-            wifi=requireNetwork(NetworkCapabilities.TRANSPORT_WIFI);
-            ConnectivityManager cm=(ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
-            lp=cm.getLinkProperties(wifi);
-            localStatus.setText("Sous-réseau : "+HomeWifiScanner.subnetInfo(lp)+"\nDécouverte des services en cours...");
-        }catch(Exception e){localStatus.setText(e.getMessage());return;}
-        scanning.set(true);found=0;discovered.clear();devices.removeAllViews();
-        tasks.execute(()->{
+            boolean started=wifi.startScan();
+            wifiStatus.setText(started?
+                "Radar radio lancé. Attente des résultats…":
+                "Nouveau scan limité par Android. Affichage des dernières mesures disponibles.");
+            displayRadioResults(started);
+        }catch(SecurityException se){
+            wifiStatus.setText("Permission Wi-Fi/localisation refusée. Vérifie l'accès à la position précise.");
+        }catch(Exception e){wifiStatus.setText("Erreur radar Wi-Fi : "+e.getMessage());}
+    }
+    @Override public void onRequestPermissionsResult(int req,String[] permissions,int[] grants){
+        super.onRequestPermissionsResult(req,permissions,grants);
+        if(req==LOCATION_REQUEST){
+            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED)
+                startRadioScan();
+            else wifiStatus.setText("Sans localisation précise autorisée, Android bloque le scan des réseaux Wi-Fi.");
+        }
+    }
+    private String wifiHint(String ssid){
+        String s=ssid.toLowerCase(Locale.ROOT);
+        String[] clues={"ipcam","ip-cam","camera","cam_","cam-","reolink","hikvision",
+            "dahua","ezviz","imou","v380","tapo_cam","netcam","foscam","cctv","ipc-"};
+        for(String hint:clues)if(s.contains(hint))
+            return "Indice possible de réseau caméra (à vérifier)";
+        return "Type d'appareil indéterminé";
+    }
+    private void displayRadioResults(boolean fresh){
+        if(wifi==null||!wifi.isWifiEnabled())return;
+        try{
+            List<ScanResult> list=new ArrayList<>(wifi.getScanResults());
+            Collections.sort(list,(a,b)->Integer.compare(b.level,a.level));
+            wifiResults.removeAllViews();
+            int n=Math.min(list.size(),80),possible=0;
+            for(int i=0;i<n;i++){
+                ScanResult result=list.get(i);
+                String ssid=result.SSID==null||result.SSID.isEmpty()?"(SSID masqué)":result.SSID;
+                String hint=wifiHint(ssid);
+                if(hint.startsWith("Indice"))possible++;
+                long age=Math.max(0,(SystemClock.elapsedRealtime()*1000L-result.timestamp)/1000000L);
+                String details=ssid+"\n"+result.BSSID+"  •  "+result.level+" dBm  •  "+
+                    result.frequency+" MHz\n"+hint;
+                final String full="SSID : "+ssid+"\nBSSID : "+result.BSSID+
+                    "\nPuissance : "+result.level+" dBm\nFréquence : "+result.frequency+
+                    " MHz\nSécurité annoncée : "+result.capabilities+
+                    "\nDernière observation : il y a ~"+age+" s\n\n"+hint+
+                    "\n\nCes informations radio ne permettent pas d'accéder aux caméras d'un réseau.";
+                button(wifiResults,details,()->new AlertDialog.Builder(this)
+                    .setTitle("Réseau détecté").setMessage(full)
+                    .setPositiveButton("OK",null).show());
+            }
+            wifiStatus.setText(n+" borne(s) Wi-Fi affichée(s), dont "+possible+
+                " avec un nom évoquant une caméra.\n"+
+                (fresh?"Résultats récents.":"Résultats possiblement anciens : Android peut limiter le scan.")+
+                "\nAucun réseau rejoint, aucun appareil interne sondé.");
+        }catch(SecurityException se){
+            wifiStatus.setText("Android n'autorise pas la lecture du radar : vérifie l'autorisation Position précise.");
+        }catch(Exception e){wifiStatus.setText("Résultats radio indisponibles : "+e.getMessage());}
+    }
+    private Network cellularNetwork()throws Exception{
+        ConnectivityManager cm=(ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
+        Network active=cm.getActiveNetwork();
+        NetworkCapabilities cap=active==null?null:cm.getNetworkCapabilities(active);
+        if(cap==null||!cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)||
+           cap.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)||
+           cap.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
+            throw new Exception("Utilise les données mobiles 4G/5G sans Wi-Fi connecté ni VPN.");
+        return active;
+    }
+    private void startSampleScan(){
+        if(scanning.get()){mobileStatus.setText("Recherche déjà en cours.");return;}
+        if(!sampleNotice.isChecked()){
+            mobileStatus.setText("Coche d'abord l'avertissement sur les échantillons publics.");return;
+        }
+        final Network net;
+        try{net=cellularNetwork();}
+        catch(Exception e){mobileStatus.setText(e.getMessage());return;}
+        int sample=samplePicker.getSelectedItemPosition();
+        publicResults.removeAllViews();detected=0;
+        scanning.set(true);
+        mobileStatus.setText("Analyse en 4G/5G de l'échantillon "+(sample+1)+" : 254 IP au maximum.\nServices réseau seulement ; aucune vidéo ouverte.");
+        work.execute(()->{
             try{
-                HomeWifiScanner.scan(wifi,lp,scanning,new HomeWifiScanner.Listener(){
-                    @Override public void detected(HomeWifiScanner.Host host){
+                PublicSampleScanner.scan(net,sample,scanning,new PublicSampleScanner.Listener(){
+                    @Override public void detected(PublicSampleScanner.Host h){
                         runOnUiThread(()->{
                             if(!scanning.get())return;
-                            found++;discovered.add(host);
-                            button(devices,host.ip+" • TCP "+host.openPorts+" — examiner",()->hostOptions(host));
+                            detected++;
+                            button(publicResults,h.ip+" • ports TCP répondants : "+h.ports,
+                                ()->chooseOwnedHost(h));
                         });
                     }
-                    @Override public void progress(int done,int total){
-                        runOnUiThread(()->localStatus.setText("Scan Wi-Fi : "+done+"/"+total+
-                            " adresses examinées ; "+found+" appareil(s) avec service répondant.\n"+
-                            "Un appareil sans ces services peut rester invisible."));
+                    @Override public void progress(int count,int total){
+                        runOnUiThread(()->mobileStatus.setText("Analyse : "+count+"/"+total+
+                            " IP • "+detected+" hôte(s) avec un port répondant.\n"+
+                            "Port ouvert ≠ caméra ≠ vulnérabilité."));
                     }
                 });
-                boolean lookup=scanning.get() && lookupAllowed.isChecked();
-                if(lookup){
-                    try{
-                        String publicIp=findExternalIPv4(wifi);
-                        if(scanning.get()){
-                            homeIp=publicIp;
-                            getPreferences(0).edit().putString("home_public_ip",homeIp)
-                                .putLong("home_public_ip_time",System.currentTimeMillis()).apply();
-                            runOnUiThread(this::renderStoredIp);
-                        }
-                    }catch(Exception e){
-                        runOnUiThread(()->localStatus.append("\nAdresse extérieure non déterminée : "+e.getMessage()));
-                    }
-                }
-                runOnUiThread(()->localStatus.append("\nDécouverte terminée. Liste non exhaustive."));
-            }catch(Exception e){runOnUiThread(()->localStatus.setText("Scan interrompu : "+e.getMessage()));}
+                runOnUiThread(()->mobileStatus.append("\nRecherche terminée ou arrêtée. Aucun résultat ne certifie tes caméras."));
+            }catch(Exception e){runOnUiThread(()->mobileStatus.setText("Erreur de recherche : "+e.getMessage()));}
             finally{scanning.set(false);}
         });
     }
-    private String findExternalIPv4(Network wifi)throws Exception{
-        HttpURLConnection c=(HttpURLConnection)wifi.openConnection(new URL("https://api4.ipify.org"));
-        c.setConnectTimeout(5500);c.setReadTimeout(5500);c.setUseCaches(false);
-        try{
-            if(c.getResponseCode()!=200)throw new Exception("Service d'IP indisponible.");
-            String ip;
-            try(BufferedReader reader=new BufferedReader(new InputStreamReader(c.getInputStream()))){
-                ip=reader.readLine();
-            }
-            if(ip==null||!ip.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}"))
-                throw new Exception("Adresse publique IPv4 non valide.");
-            SecurityRules.requirePublicHost(ip);
-            return ip;
-        }finally{c.disconnect();}
-    }
-    private void renderStoredIp(){
-        if(ipStatus==null)return;
-        if(homeIp==null||homeIp.isEmpty())
-            ipStatus.setText("Aucune IP publique mémorisée. Lance d'abord le scanner Wi-Fi de chez toi.");
-        else{
-            long timestamp=getPreferences(0).getLong("home_public_ip_time",0L);
-            long hours=timestamp==0?0:Math.max(0,(System.currentTimeMillis()-timestamp)/3600000L);
-            ipStatus.setText("Adresse publique de sortie mémorisée : "+homeIp+
-                "\nDétectée il y a environ "+hours+" h. Elle peut avoir changé entre les deux tests.");
-        }
-    }
-    private void hostOptions(HomeWifiScanner.Host h){
-        new AlertDialog.Builder(this).setTitle("Appareil Wi-Fi : "+h.ip)
-            .setMessage("Ports accessibles depuis ton Wi-Fi : "+h.openPorts+
-                "\n\nTester une éventuelle vidéo locale sans compte ? Cela ne démontre AUCUNE exposition sur Internet.")
-            .setNegativeButton("Fermer",null)
-            .setPositiveButton("Tester localement",(d,w)->testLocalVideo(h)).show();
-    }
-    private void testLocalVideo(HomeWifiScanner.Host h){
-        final Network wifi;
-        try{wifi=requireNetwork(NetworkCapabilities.TRANSPORT_WIFI);}
-        catch(Exception e){videoStatus.setText(e.getMessage());return;}
-        videoStatus.setText("Recherche locale de média sur "+h.ip+" sans identifiant…");
-        tasks.execute(()->{
-            ArrayList<URL> videos=findVideoUrls(h.ip,h.openPorts,wifi);
-            runOnUiThread(()->{
-                if(videos.isEmpty())videoStatus.setText("Aucune vidéo locale standard trouvée sur "+h.ip+". Autres protocoles non testés.");
-                else{
-                    videoStatus.setText("Un média LOCAL répond. Son existence ne prouve pas un accès depuis Internet.");
-                    URL first=videos.get(0);
-                    new AlertDialog.Builder(this).setTitle("Vidéo locale de ton appareil")
-                        .setMessage(first.toString()+"\n\nVisualisation uniquement sur ton propre réseau Wi-Fi.")
-                        .setNegativeButton("Annuler",null)
-                        .setPositiveButton("Voir en direct",(d,w)->playVideo(first,false)).show();
+    private void chooseOwnedHost(PublicSampleScanner.Host h){
+        boolean[] confirmed={false};
+        new AlertDialog.Builder(this)
+            .setTitle("Vérification sur mon équipement")
+            .setMessage("Adresse : "+h.ip+"\nPorts : "+h.ports+
+                "\n\nLa détection d'un port ne permet pas de savoir à qui appartient cet appareil."+
+                "\nLes tests HTTP et vidéo ne doivent être faits que sur un équipement dont tu es certain d'être propriétaire.")
+            .setMultiChoiceItems(new String[]{"Je confirme être propriétaire de cet équipement."},
+                confirmed,(dialog,which,checked)->confirmed[0]=checked)
+            .setNegativeButton("Annuler",null)
+            .setPositiveButton("Vérifier mes flux",(dialog,which)->{
+                if(!confirmed[0]){
+                    mobileStatus.setText("Test vidéo refusé : propriété de l'équipement non confirmée.");
+                    return;
                 }
-            });
-        });
+                probeOwnedHost(h);
+            }).show();
     }
-    private void startMobileScan(){
+    private void probeOwnedHost(PublicSampleScanner.Host h){
         final Network mobile;
-        try{mobile=requireNetwork(NetworkCapabilities.TRANSPORT_CELLULAR);}
-        catch(Exception e){remoteStatus.setText(e.getMessage());return;}
-        if(homeIp==null||homeIp.isEmpty()){
-            remoteStatus.setText("Adresse extérieure inconnue. Lance le scanner Wi-Fi chez toi et autorise la récupération de ton IP publique.");return;
-        }
-        final String ip=homeIp;
-        try{SecurityRules.requirePublicHost(ip);}
-        catch(Exception e){remoteStatus.setText("Adresse publique invalide : "+e.getMessage());return;}
+        try{mobile=cellularNetwork();}
+        catch(Exception e){videoStatus.setText(e.getMessage());return;}
         stopVideo();
-        videoChoices.removeAllViews();
-        remoteStatus.setText("Test en cours de "+ip+" depuis la 4G/5G. Aucun compte ni connexion Freebox.");
-        tasks.execute(()->{
-            List<Integer> ports=new ArrayList<>();
-            for(int port:new int[]{80,443,554,8554,8080,8443,8000,5000,8123}){
-                try(Socket s=mobile.getSocketFactory().createSocket()){
-                    s.connect(new InetSocketAddress(ip,port),1100);
-                    ports.add(port);
-                }catch(Exception ignored){}
-            }
-            ArrayList<URL> videos=findVideoUrls(ip,ports,mobile);
-            runOnUiThread(()->{
-                remoteStatus.setText("Adresse testée : "+ip+"\nPorts TCP joignables : "+ports+
-                    "\nFlux vidéo standards répondant : "+videos.size()+
-                    "\nCes résultats ne certifient pas la sécurité des caméras cloud ou des protocoles non pris en charge."+
-                    "\nAttention : en cas de CGNAT, cette IP pourrait être partagée avec d'autres abonnés.");
-                if(videos.isEmpty()){
-                    label(videoChoices,"Aucune preuve de flux vidéo extérieur. Test NON CONCLUANT sur les autres protocoles.",MUTED);
-                }else{
-                    label(videoChoices,"Lecture uniquement si tu reconnais un service qui t'appartient :",BLUE);
-                    int limit=Math.min(videos.size(),8);
-                    for(int i=0;i<limit;i++){
-                        URL u=videos.get(i);
-                        button(videoChoices,"Vérifier le direct : "+u.getPort()+u.getPath(),()->{
-                            try{requireNetwork(NetworkCapabilities.TRANSPORT_CELLULAR);}
-                            catch(Exception e){videoStatus.setText(e.getMessage());return;}
-                            new AlertDialog.Builder(this).setTitle("Ton flux vidéo ?")
-                                .setMessage("Adresse : "+u+"\n\nConfirme que ce service t'appartient. L'application tentera une lecture sans identifiants.")
-                                .setNegativeButton("Non",null)
-                                .setPositiveButton("Oui, voir le direct",(d,w)->playVideo(u,true)).show();
-                        });
-                    }
+        videoStatus.setText("Recherche de formats vidéo HTTP(S) standards sans mot de passe sur "+h.ip+"...");
+        work.execute(()->{
+            List<URL> candidates=new ArrayList<>();
+            String[] paths={"/video","/mjpeg","/video.mjpg","/stream","/live.m3u8"};
+            for(int port:h.ports){
+                if(port==554||port==8554)continue;
+                String scheme=port==443?"https":"http";
+                for(String path:paths){
+                    try{
+                        URL u=new URL(scheme+"://"+h.ip+":"+port+path);
+                        HttpProbe.Result r=HttpProbe.inspect(u,mobile);
+                        if(r.playable)candidates.add(u);
+                    }catch(Exception ignored){}
                 }
+            }
+            runOnUiThread(()->{
+                if(candidates.isEmpty()){
+                    videoStatus.setText("Aucune URL HTTP(S) vidéo standard trouvée sur TON équipement. RTSP et flux cloud privés non vérifiés.");
+                    return;
+                }
+                videoStatus.setText(candidates.size()+" réponse(s) annonçant un média. La lecture réelle reste à confirmer.");
+                URL selected=candidates.get(0);
+                new AlertDialog.Builder(this).setTitle("Tester le direct réel ?")
+                    .setMessage(selected.toString()+"\n\nAucun compte n'a été utilisé. Le contenu vidéo annoncé n'est pas encore une preuve de direct.")
+                    .setNegativeButton("Non",null)
+                    .setPositiveButton("Lire le flux", (d,w)->playVideo(selected)).show();
             });
         });
     }
-    private ArrayList<URL> findVideoUrls(String ip,List<Integer> ports,Network network){
-        ArrayList<URL> urls=new ArrayList<>();
-        String[] paths={"/video","/mjpeg","/video.mjpg","/stream","/live.m3u8"};
-        for(int port:ports){
-            if(port==554||port==8554)continue; // RTSP is not handled by this HTTP video player.
-            String protocol=(port==443||port==8443)?"https":"http";
-            for(String path:paths){
-                try{
-                    URL url=new URL(protocol+"://"+ip+":"+port+path);
-                    HttpProbe.Result result=HttpProbe.inspect(url,network);
-                    if(result.playable)urls.add(url);
-                }catch(Exception ignored){}
-            }
-        }
-        return urls;
-    }
-    private void playVideo(URL url,boolean publicTest){
-        stopVideo();
-        try{
-            if(publicTest)requireNetwork(NetworkCapabilities.TRANSPORT_CELLULAR);
-            else requireNetwork(NetworkCapabilities.TRANSPORT_WIFI);
-        }catch(Exception e){videoStatus.setText(e.getMessage());return;}
-        showingVideo=true;receivedFrame=false;
-        videoStatus.setText("Tentative de décodage d'images réelles… Aucun enregistrement.");
-        if(url.getPath().endsWith(".mjpg")||url.getPath().equals("/mjpeg"))playMjpeg(url,publicTest);
-        else{
-            tasks.execute(()->{
-                try{
-                    HttpProbe.Result r=HttpProbe.inspect(url);
-                    runOnUiThread(()->{
-                        if(!showingVideo)return;
-                        if(r.mjpeg)playMjpeg(url,publicTest);
-                        else if(r.playable)playNative(url,publicTest);
-                        else videoStatus.setText("Aucun format vidéo lisible. Exposition non démontrée.");
-                    });
-                }catch(Exception e){runOnUiThread(()->videoStatus.setText("Flux indisponible : "+e.getMessage()));}
-            });
-        }
-    }
-    private void playMjpeg(URL url,boolean publicTest){
-        player.setVisibility(View.GONE);mjpegView.setVisibility(View.VISIBLE);
-        mjpegReader.start(url,new MjpegReader.Listener(){
-            @Override public void frame(Bitmap bitmap){
+    private void playVideo(URL url){
+        try{cellularNetwork();}
+        catch(Exception e){videoStatus.setText(e.getMessage());return;}
+        stopVideo();videoPlaying=true;gotFrame=false;
+        videoStatus.setText("Tentative de décodage du média en direct…");
+        work.execute(()->{
+            try{
+                HttpProbe.Result r=HttpProbe.inspect(url);
                 runOnUiThread(()->{
-                    if(!showingVideo||isFinishing())return;
-                    mjpegView.setImageBitmap(bitmap);
-                    if(!receivedFrame){receivedFrame=true;showProof(publicTest);}
+                    if(!videoPlaying)return;
+                    if(!r.playable){videoStatus.setText("Le service ne fournit pas de vidéo vérifiable.");return;}
+                    if(r.mjpeg){
+                        mjpegImage.setVisibility(View.VISIBLE);
+                        mjpegReader.start(url,new MjpegReader.Listener(){
+                            @Override public void frame(Bitmap image){
+                                runOnUiThread(()->{
+                                    if(!videoPlaying||isFinishing())return;
+                                    mjpegImage.setImageBitmap(image);
+                                    if(!gotFrame){gotFrame=true;showVideoProof();}
+                                });
+                            }
+                            @Override public void error(String err){
+                                runOnUiThread(()->{
+                                    if(videoPlaying&&!gotFrame)videoStatus.setText("Décodage MJPEG impossible : "+err);
+                                });
+                            }
+                        });
+                    }else{
+                        player.setVisibility(View.VISIBLE);
+                        player.setOnErrorListener((mp,what,extra)->{
+                            videoStatus.setText("Le flux n'a pas pu être lu. Aucune preuve vidéo.");return true;
+                        });
+                        player.setOnInfoListener((mp,what,extra)->{
+                            if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){
+                                gotFrame=true;showVideoProof();
+                            }
+                            return false;
+                        });
+                        player.setOnPreparedListener(mp->mp.start());
+                        player.setVideoPath(url.toString());
+                        player.start();
+                    }
                 });
-            }
-            @Override public void error(String error){
-                runOnUiThread(()->{if(showingVideo&&!receivedFrame)videoStatus.setText("Vidéo non confirmée : "+error);});
-            }
+            }catch(Exception e){runOnUiThread(()->videoStatus.setText("Erreur vidéo : "+e.getMessage()));}
         });
     }
-    private void playNative(URL url,boolean publicTest){
-        player.setVisibility(View.VISIBLE);mjpegView.setVisibility(View.GONE);
-        player.setOnErrorListener((mp,what,extra)->{videoStatus.setText("Échec de lecture : aucune vidéo démontrée.");return true;});
-        player.setOnInfoListener((mp,what,extra)->{
-            if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){receivedFrame=true;showProof(publicTest);}
-            return false;
-        });
-        player.setOnPreparedListener(mp->mp.start());
-        player.setVideoPath(url.toString());player.requestFocus();player.start();
-    }
-    private void showProof(boolean publicTest){
-        videoStatus.setText(publicTest?
-            "Images reçues depuis la 4G sans identifiants. Bouge devant ta caméra pour confirmer le direct. Si ce flux est privé, vérifie sa protection.":
-            "Images reçues EN Wi-Fi local. Ce résultat ne prouve pas un accès depuis Internet.");
-        videoStatus.setTextColor(publicTest?RED:BLUE);
+    private void showVideoProof(){
+        videoStatus.setTextColor(RED);
+        videoStatus.setText("Premières images décodées sans identifiants, depuis la 4G/5G. Bouge devant TA caméra pour vérifier le direct.");
     }
     private void stopVideo(){
-        showingVideo=false;receivedFrame=false;
+        videoPlaying=false;gotFrame=false;
         mjpegReader.stop();
         if(player!=null){player.stopPlayback();player.setVisibility(View.GONE);}
-        if(mjpegView!=null){mjpegView.setImageDrawable(null);mjpegView.setVisibility(View.GONE);}
+        if(mjpegImage!=null){mjpegImage.setImageDrawable(null);mjpegImage.setVisibility(View.GONE);}
     }
     @Override protected void onStop(){super.onStop();stopVideo();}
-    @Override protected void onDestroy(){super.onDestroy();scanning.set(false);stopVideo();tasks.shutdownNow();}
+    @Override protected void onDestroy(){
+        super.onDestroy();
+        scanning.set(false);stopVideo();work.shutdownNow();
+        if(wifiReceiverRegistered)unregisterReceiver(wifiReceiver);
+    }
 }

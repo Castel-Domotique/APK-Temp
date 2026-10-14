@@ -13,9 +13,6 @@ import android.media.MediaPlayer;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
-import android.webkit.WebResourceRequest;
 import android.net.Uri;
 import android.content.Intent;
 import android.app.AlertDialog;
@@ -40,7 +37,7 @@ public class MainActivity extends Activity {
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private volatile boolean visuallyConfirmed = false;
     private boolean verifiedOwner = false;
-    private WebView indexView;
+    private TextView discoveryStatus;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -61,17 +58,9 @@ public class MainActivity extends Activity {
         button("Rechercher les caméras indexées", () -> browse("webcam"));
         button("Rechercher les services RTSP indexés", () -> browse("port:554"));
         button("Rechercher les interfaces caméra", () -> browse("title:camera"));
-        indexView = new WebView(this);
-        indexView.getSettings().setJavaScriptEnabled(true);
-        indexView.getSettings().setDomStorageEnabled(true);
-        indexView.setWebViewClient(new WebViewClient(){
-            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r){return selectResult(r.getUrl());}
-            @Override public boolean shouldOverrideUrlLoading(WebView v, String u){return selectResult(Uri.parse(u));}
-        });
-        root.addView(indexView, new LinearLayout.LayoutParams(-1,dp(300)));
-        button("Recherche Shodan dans le navigateur",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.shodan.io/search?query=webcam"))));
-        button("Choisir une fiche Shodan copiée",this::chooseClipboard);
-        note("Shodan peut limiter les recherches ou demander un compte Shodan. Pas d'API Freebox.", MUTED);
+        discoveryStatus = note("Choisis une recherche. Le navigateur s'ouvrira : plus de page blanche dans l'application.",BLUE);
+        button("Importer une fiche Shodan copiée",this::chooseClipboard);
+        note("Après la recherche, ouvre uniquement une fiche correspondant à TON IP, copie son lien /host/IP, reviens ici et appuie sur Importer. Shodan peut exiger un compte Shodan ou restreindre les résultats. Aucun compte Freebox nécessaire.", MUTED);
         section("01  TEST EXTÉRIEUR");
         note("Wi-Fi désactivé, VPN coupé. Le mode extérieur ne passe pas par le réseau local.", MUTED);
         target = input("Cible choisie depuis Shodan", false);
@@ -157,9 +146,20 @@ public class MainActivity extends Activity {
     }
     private void setStatus(String s,int color){if(status!=null) {status.setText(s);status.setTextColor(color);} }
     private void browse(String query){
-        if(!requireMobile())return;
-        indexView.loadUrl("https://www.shodan.io/search?query="+Uri.encode(query));
-        setStatus("Consultation d'un index public. Aucun test actif en cours.",BLUE);
+        if(!requireMobile()){
+            if(discoveryStatus!=null)discoveryStatus.setText("Wi-Fi ou VPN détecté : désactive-les puis réessaie sur la 4G/5G.");
+            return;
+        }
+        String url="https://www.shodan.io/search?query="+Uri.encode(query);
+        discoveryStatus.setText("Ouverture de Shodan dans ton navigateur. Sélectionne uniquement TES équipements, copie leur lien puis reviens sur Importer.");
+        try {
+            Intent intent=new Intent(Intent.ACTION_VIEW,Uri.parse(url));
+            startActivity(intent);
+            setStatus("Recherche lancée dans le navigateur ; aucune cible scannée.",BLUE);
+        }catch(Exception err){
+            discoveryStatus.setText("Impossible d'ouvrir le navigateur. Vérifie qu'un navigateur Android est installé : "+err.getClass().getSimpleName());
+            setStatus("Recherche impossible.",RED);
+        }
     }
     private boolean selectResult(Uri uri){
         String host=uri.getHost();
@@ -190,10 +190,32 @@ public class MainActivity extends Activity {
     private void chooseClipboard(){
         ClipboardManager manager=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
         ClipData clipboard=manager==null?null:manager.getPrimaryClip();
-        if(clipboard==null||clipboard.getItemCount()<1){setStatus("Presse-papiers vide.",RED);return;}
+        if(clipboard==null||clipboard.getItemCount()<1){
+            discoveryStatus.setText("Presse-papiers vide : copie une fiche Shodan /host/IP depuis ton navigateur.");
+            return;
+        }
         CharSequence url=clipboard.getItemAt(0).coerceToText(this);
-        if(url==null||!selectResult(Uri.parse(url.toString().trim())))
-            setStatus("Copie un lien vers une fiche Shodan /host/IP.",RED);
+        String input=url==null?"":url.toString().trim();
+        Uri uri=Uri.parse(input);
+        String host=uri.getHost(), path=uri.getPath();
+        if(!"https".equalsIgnoreCase(uri.getScheme())||host==null||
+          !(host.equalsIgnoreCase("shodan.io")||host.equalsIgnoreCase("www.shodan.io"))||
+          path==null||!path.matches("/host/[0-9]{1,3}(\\.[0-9]{1,3}){3}")){
+            discoveryStatus.setText("Lien non reconnu. Sur Shodan, ouvre la fiche d'hôte de TON équipement, puis copie son adresse de type https://www.shodan.io/host/8.8.8.8");
+            return;
+        }
+        String ip=path.substring(6);
+        pool.execute(()->{
+            try{
+                SecurityRules.requirePublicHost(ip);
+                runOnUiThread(()->{
+                    discoveryStatus.setText("Fiche reconnue : "+ip+". Confirme la propriété dans la fenêtre suivante.");
+                    selectResult(uri);
+                });
+            }catch(Exception e){
+                runOnUiThread(()->discoveryStatus.setText("Adresse privée ou invalide : copie une fiche IP publique Shodan."));
+            }
+        });
     }
     private void scanPorts(){
         if(!requireMobile())return;

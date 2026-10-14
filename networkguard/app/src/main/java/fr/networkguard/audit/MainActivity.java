@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.5.0 • Wi-Fi sans connexion + échantillons Internet en 4G/5G",MUTED);
+        label(root,"0.5.1 • Wi-Fi sans connexion + échantillons Internet en 4G/5G",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -291,7 +291,7 @@ public class MainActivity extends Activity {
                         runOnUiThread(()->{
                             if(!scanning.get())return;
                             detected++;
-                            button(publicResults,h.ip+" • ports TCP répondants : "+h.ports,
+                            button(publicResults,h.ip+" • ports TCP répondants (non identifiés) : "+h.ports,
                                 ()->chooseOwnedHost(h));
                         });
                     }
@@ -307,29 +307,46 @@ public class MainActivity extends Activity {
         });
     }
     private void chooseOwnedHost(PublicSampleScanner.Host h){
-        boolean[] confirmed={false};
-        new AlertDialog.Builder(this)
-            .setTitle("Vérification sur mon équipement")
-            .setMessage("Adresse : "+h.ip+"\nPorts : "+h.ports+
-                "\n\nLa détection d'un port ne permet pas de savoir à qui appartient cet appareil."+
-                "\nLes tests HTTP et vidéo ne doivent être faits que sur un équipement dont tu es certain d'être propriétaire.")
-            .setMultiChoiceItems(new String[]{"Je confirme être propriétaire de cet équipement."},
-                confirmed,(dialog,which,checked)->confirmed[0]=checked)
+        // Android AlertDialog setMessage() and setMultiChoiceItems() share the
+        // same content slot. A custom view keeps the ownership checkbox visible.
+        LinearLayout content=new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22),dp(12),dp(22),dp(7));
+
+        TextView explanation=new TextView(this);
+        explanation.setText("Adresse : "+h.ip+"\nPorts TCP : "+h.ports+
+            "\n\nCe résultat ne prouve ni la présence d'une caméra ni une faille."+
+            "\n\nSi tu ne reconnais pas avec certitude TON adresse publique, annule. " +
+            "La présence d'une IP dans un échantillon aléatoire ne prouve aucune propriété.");
+        explanation.setTextSize(14);
+        content.addView(explanation);
+
+        CheckBox confirmation=new CheckBox(this);
+        confirmation.setText("Je confirme que CETTE adresse IP est bien celle de mon équipement et que je suis autorisé à le tester.");
+        confirmation.setTextSize(14);
+        confirmation.setPadding(0,dp(8),0,dp(5));
+        content.addView(confirmation);
+
+        AlertDialog dialog=new AlertDialog.Builder(this)
+            .setTitle("Tester uniquement MON équipement")
+            .setView(content)
             .setNegativeButton("Annuler",null)
-            .setPositiveButton("Vérifier mes flux",(dialog,which)->{
-                if(!confirmed[0]){
-                    mobileStatus.setText("Test vidéo refusé : propriété de l'équipement non confirmée.");
-                    return;
-                }
-                probeOwnedHost(h);
-            }).show();
+            .setPositiveButton("Tester mon flux",(d,which)->probeOwnedHost(h))
+            .create();
+        dialog.setOnShowListener(d->{
+            Button positive=dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            positive.setEnabled(false);
+            confirmation.setOnCheckedChangeListener((v,checked)->positive.setEnabled(checked));
+        });
+        dialog.show();
     }
     private void probeOwnedHost(PublicSampleScanner.Host h){
         final Network mobile;
         try{mobile=cellularNetwork();}
         catch(Exception e){videoStatus.setText(e.getMessage());return;}
         stopVideo();
-        videoStatus.setText("Recherche de formats vidéo HTTP(S) standards sans mot de passe sur "+h.ip+"...");
+        videoStatus.setText("Vérification HTTP(S) sans compte sur TON adresse "+h.ip+
+            "… (RTSP 554 non pris en charge dans cette version).");
         work.execute(()->{
             List<URL> candidates=new ArrayList<>();
             String[] paths={"/video","/mjpeg","/video.mjpg","/stream","/live.m3u8"};
@@ -346,7 +363,7 @@ public class MainActivity extends Activity {
             }
             runOnUiThread(()->{
                 if(candidates.isEmpty()){
-                    videoStatus.setText("Aucune URL HTTP(S) vidéo standard trouvée sur TON équipement. RTSP et flux cloud privés non vérifiés.");
+                    videoStatus.setText("Aucun flux HTTP(S) standard trouvé. Le port TCP 554 n’est pas une preuve de vidéo : RTSP, accès cloud et protocoles propriétaires ne sont pas testés.");
                     return;
                 }
                 videoStatus.setText(candidates.size()+" réponse(s) annonçant un média. La lecture réelle reste à confirmer.");

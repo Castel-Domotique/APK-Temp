@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private WifiManager wifi;
     private boolean wifiReceiverRegistered=false,videoPlaying=false,gotFrame=false;
     private int detected=0;
+    private final java.util.Map<String,Integer> portProfiles=new java.util.HashMap<>();
 
     private final BroadcastReceiver wifiReceiver=new BroadcastReceiver() {
         @Override public void onReceive(Context c,Intent intent){
@@ -281,7 +282,7 @@ public class MainActivity extends Activity {
         try{net=cellularNetwork();}
         catch(Exception e){mobileStatus.setText(e.getMessage());return;}
         int sample=samplePicker.getSelectedItemPosition();
-        publicResults.removeAllViews();detected=0;
+        publicResults.removeAllViews();detected=0;portProfiles.clear();
         scanning.set(true);
         mobileStatus.setText("Analyse en 4G/5G de l'échantillon "+(sample+1)+" : 254 IP au maximum.\nServices réseau seulement ; aucune vidéo ouverte.");
         work.execute(()->{
@@ -291,14 +292,21 @@ public class MainActivity extends Activity {
                         runOnUiThread(()->{
                             if(!scanning.get())return;
                             detected++;
+                            String profile=h.ports.toString();
+                            portProfiles.put(profile,portProfiles.containsKey(profile)?portProfiles.get(profile)+1:1);
                             button(publicResults,h.ip+" • ports TCP répondants (non identifiés) : "+h.ports,
                                 ()->chooseOwnedHost(h));
                         });
                     }
                     @Override public void progress(int count,int total){
-                        runOnUiThread(()->mobileStatus.setText("Analyse : "+count+"/"+total+
-                            " IP • "+detected+" hôte(s) avec un port répondant.\n"+
-                            "Port ouvert ≠ caméra ≠ vulnérabilité."));
+                        runOnUiThread(()->{
+                            boolean repeated=false;
+                            for(Integer frequency:portProfiles.values())if(frequency>=8)repeated=true;
+                            mobileStatus.setText("Analyse : "+count+"/"+total+
+                                " IP • "+detected+" hôte(s) avec un port TCP répondant.\n"+
+                                "Port ouvert ≠ caméra ≠ vulnérabilité."+
+                                (repeated?"\n⚠️ Nombreuses IP au profil identique : résultats possiblement liés à un filtrage/interception réseau, non à des caméras.":""));
+                        });
                     }
                 });
                 runOnUiThread(()->mobileStatus.append("\nRecherche terminée ou arrêtée. Aucun résultat ne certifie tes caméras."));
@@ -367,11 +375,13 @@ public class MainActivity extends Activity {
                     return;
                 }
                 videoStatus.setText(candidates.size()+" réponse(s) annonçant un média. La lecture réelle reste à confirmer.");
-                URL selected=candidates.get(0);
-                new AlertDialog.Builder(this).setTitle("Tester le direct réel ?")
-                    .setMessage(selected.toString()+"\n\nAucun compte n'a été utilisé. Le contenu vidéo annoncé n'est pas encore une preuve de direct.")
-                    .setNegativeButton("Non",null)
-                    .setPositiveButton("Lire le flux", (d,w)->playVideo(selected)).show();
+                String[] labels=new String[candidates.size()];
+                for(int i=0;i<candidates.size();i++)labels[i]=candidates.get(i).toString();
+                new AlertDialog.Builder(this)
+                    .setTitle("Choisir le flux de TON appareil")
+                    .setItems(labels,(d,which)->playVideo(candidates.get(which)))
+                    .setNegativeButton("Annuler",null)
+                    .show();
             });
         });
     }

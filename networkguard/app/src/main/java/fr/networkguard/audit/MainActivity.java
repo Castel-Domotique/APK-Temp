@@ -77,6 +77,7 @@ public class MainActivity extends Activity {
     private WifiManager wifi;
     private boolean wifiReceiverRegistered=false,videoPlaying=false,gotFrame=false;
     private int detected=0;
+    private int totalIpExamined=0;
     private final java.util.Map<String,Integer> portProfiles=new java.util.HashMap<>();
     private final List<PublicSampleScanner.Host> publicHosts=new ArrayList<>();
     private final java.util.Set<String> decodedVideoHosts=new java.util.HashSet<>();
@@ -101,7 +102,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.7.1 • RTSP : diagnostic, arrêt automatique et filtre anti-faux positifs",MUTED);
+        label(root,"0.7.2 • RTSP : diagnostic, arrêt automatique et filtre anti-faux positifs",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
@@ -315,7 +316,7 @@ public class MainActivity extends Activity {
         try{net=cellularNetwork();}
         catch(Exception e){mobileStatus.setText(e.getMessage());return;}
         int sample=samplePicker.getSelectedItemPosition();
-        publicResults.removeAllViews();detected=0;portProfiles.clear();publicHosts.clear();decodedVideoHosts.clear();
+        publicResults.removeAllViews();detected=0;totalIpExamined=0;portProfiles.clear();publicHosts.clear();decodedVideoHosts.clear();
         renderPublicResults();
         scanning.set(true);
         mobileStatus.setText("Analyse en 4G/5G de l'échantillon "+(sample+1)+" : 254 IP au maximum.\nServices réseau seulement ; aucune vidéo ouverte.");
@@ -334,12 +335,16 @@ public class MainActivity extends Activity {
                     }
                     @Override public void progress(int count,int total){
                         runOnUiThread(()->{
+                            totalIpExamined=Math.max(totalIpExamined,count);
                             boolean repeated=false;
                             for(Integer frequency:portProfiles.values())if(frequency>=8)repeated=true;
+                            boolean anomaly=VideoEvidence.isAnomalousDiscovery(totalIpExamined,detected);
                             mobileStatus.setText("Analyse : "+count+"/"+total+
-                                " IP • "+detected+" hôte(s) avec un port TCP répondant.\n"+
+                                " IP • "+detected+" adresse(s) avec réponse TCP (PAS forcément des équipements).\n"+
                                 "Port ouvert ≠ caméra ≠ vulnérabilité."+
-                                (repeated?"\n⚠️ Nombreuses IP au profil identique : résultats possiblement liés à un filtrage/interception réseau, non à des caméras.":""));
+                                (repeated?"\n⚠️ Beaucoup d'IP possèdent exactement les mêmes ports.":"")+
+                                (anomaly?"\n⚠️ FIABILITÉ INSUFFISANTE : proportion anormalement élevée de réponses. Les indices caméra sont suspendus pour ce scan.":""));
+                            if(anomaly)renderPublicResults();
                         });
                     }
                 });
@@ -353,11 +358,12 @@ public class MainActivity extends Activity {
         publicResults.removeAllViews();
         boolean showAll=showAllServices.isChecked();
         int likely=0,other=0,shown=0,suspicious=0;
+        boolean anomaly=VideoEvidence.isAnomalousDiscovery(totalIpExamined,detected);
         for(PublicSampleScanner.Host h:publicHosts){
             int cat=VideoEvidence.category(h.ports,decodedVideoHosts.contains(h.ip));
             boolean repetition=VideoEvidence.isRepetitiveProfile(
                 portProfiles.containsKey(h.ports.toString())?portProfiles.get(h.ports.toString()):0);
-            if(repetition&&cat!=3){
+            if((repetition||anomaly)&&cat!=3){
                 cat=0; // unverified: not proof that the service has no video
                 suspicious++;
             }
@@ -391,6 +397,7 @@ public class MainActivity extends Activity {
             String type=cat==3?"Images vidéo décodées sur ton appareil (direct à confirmer)"
                 :cat==2?"Indice RTSP : aucune image vérifiée"
                 :cat==1?"Service web uniquement identifié : flux inconnu"
+                :anomaly?"Scan globalement suspect : pas de caméra confirmée"
                 :repetition?"Ports répétés sur plusieurs IP : service non identifié"
                 :"Service non identifié";
             details.setText(type+" • TCP "+h.ports);
@@ -399,11 +406,12 @@ public class MainActivity extends Activity {
         }
         listSummary.setText("Affichés : "+shown+" / "+publicHosts.size()+
             " • Indices RTSP non répétés : "+likely+
-            " • Profils répétitifs à vérifier : "+suspicious+
+            " • Réponses non fiables/suspectes : "+suspicious+
             " • Autres : "+(other-suspicious)+
+            (anomaly?"\n⚠️ Scanner non fiable sur cet échantillon : proportion de réponses excessivement élevée. Aucun indice de caméra retenu.":"")+
             (showAll?"\nToutes les observations sont affichées."
-                :"\nProfils répétitifs et services web masqués par défaut, sans conclure à l'absence de vidéo."+
-                "\nCoche la case ci-dessus pour tous les afficher."));
+                :"\nAdresses suspectes et services web masqués, sans conclure à l'absence de vidéo."+
+                "\nCoche la case ci-dessus pour les réafficher."));
     }
 
     private void chooseOwnedHost(PublicSampleScanner.Host h){

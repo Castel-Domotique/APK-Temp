@@ -103,7 +103,7 @@ public final class ThreatAuditActivity extends Activity {
         button(phone,"Ouvrir le tableau de bord confidentialité",()->openSettings(Settings.ACTION_PRIVACY_SETTINGS));
         button(phone,"Contrôler les services d'accessibilité",()->openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS));
         button(phone,"Contrôler les accès aux notifications",()->openSettings(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
-        button(phone,"Contrôler les administrateurs d'appareil",()->openSettings(Settings.ACTION_DEVICE_ADMIN_SETTINGS));
+        button(phone,"Ouvrir la sécurité (administrateurs d’appareil)",()->openSettings(Settings.ACTION_SECURITY_SETTINGS));
         button(phone,"Contrôler les applications et leurs permissions",()->openSettings(Settings.ACTION_APPLICATION_SETTINGS));
 
         LinearLayout webcam=section(root);

@@ -97,11 +97,13 @@ public class MainActivity extends Activity {
         root.setPadding(dp(16),dp(24),dp(16),dp(28));
         scroller.addView(root);setContentView(scroller);
         title(root,"NetworkGuard",30,GREEN);
-        label(root,"0.8.0 • Multi-marques : TV, webcams et caméras IP",MUTED);
+        label(root,"0.9.0 • Audit anti-stalking : 2 scénarios + radars",MUTED);
         LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(nav);
         navButton(nav,"Radar Wi-Fi",()->showMode(true));
         navButton(nav,"Radar 4G/5G",()->showMode(false));
+        button(root,"Audit anti-stalking • Inconnu + personne qui me connaît",()->
+            startActivity(new Intent(this,ThreatAuditActivity.class)));
 
         wifiPanel=panel(root);
         title(wifiPanel,"01 • Wi-Fi sans connexion",20,GREEN);

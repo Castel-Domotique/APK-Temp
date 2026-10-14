@@ -19,6 +19,13 @@ public final class VideoEvidence {
         return matchingHosts >= 8;
     }
 
+    public static boolean isAnomalousDiscovery(int scanned, int responded) {
+        // A very high fraction of responding public IPv4 hosts is a strong
+        // signal to suspend automatic camera-candidate classification.
+        // This is not proof of a transparent proxy or of fake IP results.
+        return scanned >= 40 && responded >= 30 && responded * 10L >= scanned * 7L;
+    }
+
     public static boolean hasWebOnlyClue(List<Integer> ports){
         if(ports==null || ports.isEmpty() || hasVideoProtocolClue(ports))return false;
         return ports.contains(80)||ports.contains(443)||ports.contains(8080)||ports.contains(8000);

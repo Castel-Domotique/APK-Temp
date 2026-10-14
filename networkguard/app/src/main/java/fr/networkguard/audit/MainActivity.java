@@ -13,6 +13,14 @@ import android.media.MediaPlayer;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebResourceRequest;
+import android.net.Uri;
+import android.content.Intent;
+import android.app.AlertDialog;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.text.InputType;
 import java.net.*;
 import java.util.Locale;
@@ -31,6 +39,8 @@ public class MainActivity extends Activity {
     private MjpegReader mjpegReader = new MjpegReader();
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private volatile boolean visuallyConfirmed = false;
+    private boolean verifiedOwner = false;
+    private WebView indexView;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -45,11 +55,29 @@ public class MainActivity extends Activity {
         scroller.addView(root);
         setContentView(scroller);
         title("NetworkGuard", 30, TEXT);
-        note("Audit de TON réseau • tests réels depuis la 4G/5G", MUTED);
+        note("MODE AVEUGLE • découverte publique sans IP à saisir", MUTED);
+        section("00  RECHERCHE PUBLIQUE");
+        note("Recherche dans Shodan, sans connexion à la Freebox. Les résultats peuvent appartenir à des inconnus : sélectionne seulement tes appareils.", MUTED);
+        button("Rechercher les caméras indexées", () -> browse("webcam"));
+        button("Rechercher les services RTSP indexés", () -> browse("port:554"));
+        button("Rechercher les interfaces caméra", () -> browse("title:camera"));
+        indexView = new WebView(this);
+        indexView.getSettings().setJavaScriptEnabled(true);
+        indexView.getSettings().setDomStorageEnabled(true);
+        indexView.setWebViewClient(new WebViewClient(){
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r){return selectResult(r.getUrl());}
+            @Override public boolean shouldOverrideUrlLoading(WebView v, String u){return selectResult(Uri.parse(u));}
+        });
+        root.addView(indexView, new LinearLayout.LayoutParams(-1,dp(300)));
+        button("Recherche Shodan dans le navigateur",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.shodan.io/search?query=webcam"))));
+        button("Choisir une fiche Shodan copiée",this::chooseClipboard);
+        note("Shodan peut limiter les recherches ou demander un compte Shodan. Pas d'API Freebox.", MUTED);
         section("01  TEST EXTÉRIEUR");
         note("Wi-Fi désactivé, VPN coupé. Le mode extérieur ne passe pas par le réseau local.", MUTED);
-        target = input("IP publique ou domaine de ta Freebox", false);
-        target.setText(getPreferences(0).getString("host", ""));
+        target = input("Cible choisie depuis Shodan", false);
+        target.setEnabled(false);
+        target.setVisibility(View.GONE);
+        note("Aucune IP à saisir. Choisis une fiche /host/IP et confirme qu'elle t'appartient.", MUTED);
         button("Scanner les ports exposés", () -> scanPorts());
         scanResult = note("Aucun scan réalisé.", MUTED);
         section("02  CAMÉRA EN DIRECT");
@@ -78,8 +106,8 @@ public class MainActivity extends Activity {
         videoBox.addView(mjpegImage,vl);
         mjpegImage.setVisibility(View.GONE);
         button("Arrêter le flux", this::stopPlayback);
-        section("04  AUDIT INTÉRIEUR");
-        note("Agent Home Assistant Green : PAS ENCORE INSTALLÉ. L'inventaire des appareils et les vérifications locales viendront après validation du mode extérieur.", MUTED);
+        section("04  LIMITES");
+        note("Les caméras cloud privées peuvent être absentes des index publics. Aucun résultat ne garantit leur sécurité. Audit Home Assistant séparé.", MUTED);
         section("Interpréter les résultats");
         note("• Port ouvert ≠ caméra accessible.\n• Lien avec jeton ≠ accès anonyme public.\n• Direct visible sans compte : exposition potentielle à corriger.\n• Aucun résultat ≠ réseau garanti sécurisé.\n• Si un flux est affiché, place-toi devant la caméra pour en vérifier le direct.", MUTED);
         status = note("Prêt. Autorise uniquement les tests sur tes appareils.", BLUE);
@@ -127,8 +155,48 @@ public class MainActivity extends Activity {
         return false;
     }
     private void setStatus(String s,int color){if(status!=null) {status.setText(s);status.setTextColor(color);} }
+    private void browse(String query){
+        if(!requireMobile())return;
+        indexView.loadUrl("https://www.shodan.io/search?query="+Uri.encode(query));
+        setStatus("Consultation d'un index public. Aucun test actif en cours.",BLUE);
+    }
+    private boolean selectResult(Uri uri){
+        String host=uri.getHost();
+        if(host!=null && (host.equalsIgnoreCase("shodan.io")||host.equalsIgnoreCase("www.shodan.io"))){
+            String path=uri.getPath();
+            if("https".equalsIgnoreCase(uri.getScheme()) && path!=null && path.startsWith("/host/")){
+                String ip=path.substring(6);
+                if(ip.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}")){
+                    new AlertDialog.Builder(this).setTitle("Ton équipement ?")
+                        .setMessage("Adresse publique sélectionnée : "+ip+
+                          "\n\nConfirme uniquement si tu reconnais cette adresse comme t'appartenant.")
+                        .setNegativeButton("Non",null)
+                        .setPositiveButton("Oui, c'est le mien",(d,w)->{
+                            verifiedOwner=true;
+                            target.setText(ip);
+                            scanResult.setText("Équipement confirmé : "+ip+". Tu peux lancer son test.");
+                            setStatus("Cible choisie sans saisie et sans Freebox.",BLUE);
+                        }).show();
+                    return true;
+                }
+            }
+            return false;
+        }
+        if("https".equalsIgnoreCase(uri.getScheme()))
+            startActivity(new Intent(Intent.ACTION_VIEW,uri));
+        return true;
+    }
+    private void chooseClipboard(){
+        ClipboardManager manager=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        ClipData clipboard=manager==null?null:manager.getPrimaryClip();
+        if(clipboard==null||clipboard.getItemCount()<1){setStatus("Presse-papiers vide.",RED);return;}
+        CharSequence url=clipboard.getItemAt(0).coerceToText(this);
+        if(url==null||!selectResult(Uri.parse(url.toString().trim())))
+            setStatus("Copie un lien vers une fiche Shodan /host/IP.",RED);
+    }
     private void scanPorts(){
         if(!requireMobile())return;
+        if(!verifiedOwner){setStatus("Sélectionne d'abord ton équipement et confirme la propriété.",RED);return;}
         String host=target.getText().toString().trim();
         if(host.contains("://")) {setStatus("Saisis seulement l'IP publique ou le domaine, sans http://.",RED);return;}
         setStatus("Scan extérieur en cours...",BLUE);
@@ -150,7 +218,7 @@ public class MainActivity extends Activity {
                 String message=(found==0?"Aucun des 9 ports testés n'a répondu. Cela ne prouve PAS que le réseau est sûr.\n":found+" port(s) joignable(s) parmi les 9 testés.\n")
                     +b+"\nUne connexion TCP ne prouve pas l'accès aux images.";
                 runOnUiThread(()->{
-                    getPreferences(0).edit().putString("host",host).apply();
+                    // No home address stored.
                     scanResult.setText(message);scanResult.setTextColor(TEXT);
                     setStatus("Scan TCP terminé : "+found+" port(s) répond(ent), aucun flux vidéo déduit.",BLUE);
                 });

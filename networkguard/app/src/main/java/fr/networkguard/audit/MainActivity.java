@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         typeChooser.setAdapter(types);
         mobilePanel.addView(typeChooser,new LinearLayout.LayoutParams(-1,dp(52)));
 
-        label(mobilePanel,"Marques prises en compte (sans référence de modèle)",BLUE);
+        label(mobilePanel,"Marque pour le guide TV (ne filtre pas les résultats Internet)",BLUE);
         brandChooser=new Spinner(this);
         ArrayAdapter<String> brands=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,
             UniversalDeviceProfiles.BRANDS);
@@ -327,8 +327,16 @@ public class MainActivity extends Activity {
         final int type=typeChooser.getSelectedItemPosition();
         final String token=netlasKey.getText().toString().trim();
         if(type==2){
-            indexStatus.setText("Les caméras intégrées aux TV ne sont pas identifiables par un index Internet. Choisis 'Guide universel des caméras TV' ; tu pourras faire des vérifications adaptées lorsque tu seras chez toi.");
+            indexStatus.setText("Une caméra intégrée à une TV ne peut pas être identifiée par un index Internet. Le guide multi-marques explique les vérifications futures.");
             showUniversalGuide();
+            return;
+        }
+        if(type==1){
+            indexStatus.setText("Les webcams PC/USB ne sont pas identifiables directement par un index Internet. Vérifie plutôt les permissions et logiciels de l'ordinateur qui les utilise.");
+            new AlertDialog.Builder(this)
+                .setTitle("Webcam intégrée / USB")
+                .setMessage(UniversalDeviceProfiles.offlineWebcamAdvice())
+                .setPositiveButton("Compris",null).show();
             return;
         }
         if(token.isEmpty()){
@@ -365,8 +373,8 @@ public class MainActivity extends Activity {
             String title=(evidence?"● Images décodées (sur équipement confirmé)":"● Observation indexée seulement")+
                 "\n"+result.ip+(result.port>0?":"+result.port:"")+
                 (result.name.isEmpty()?"":" • "+result.name);
-            TextView label=label(entry,title,evidence?GREEN:MUTED);
-            label.setTextSize(14);
+            TextView primary=label(entry,title,evidence?GREEN:MUTED);
+            primary.setTextSize(14);
             label(entry,"Protocole indexé : "+result.protocol+
                 (result.lastSeen.isEmpty()?"":"\nObservation : "+result.lastSeen)+
                 "\nAucun test actif effectué.",MUTED);
